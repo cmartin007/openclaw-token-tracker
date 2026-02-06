@@ -121,7 +121,7 @@ sum_history_tokens() {
   echo "$TOTAL_INPUT|$TOTAL_OUTPUT"
 }
 
-# Display period stats
+# Display period stats with date ranges
 show_period_stats() {
   local PERIOD_NAME=$1
   local START_DATE=$2
@@ -133,7 +133,7 @@ show_period_stats() {
   PERIOD_TOKENS=$((PERIOD_INPUT + PERIOD_OUTPUT))
   PERIOD_COST=$(awk "BEGIN {printf \"%.4f\", $PERIOD_INPUT * $INPUT_COST + $PERIOD_OUTPUT * $OUTPUT_COST}")
   
-  echo "  ${BLUE}${PERIOD_NAME}:${NC}"
+  echo "  ${BLUE}${PERIOD_NAME}${NC} (${START_DATE} to ${END_DATE}):"
   printf "    Input:  %10s | Output: %10s | Total: %10s | Cost: ${YELLOW}\$%s${NC}\n" \
     "$PERIOD_INPUT" "$PERIOD_OUTPUT" "$PERIOD_TOKENS" "$PERIOD_COST"
 }
@@ -190,7 +190,8 @@ echo "🤖 Model: ${CYAN}$MODEL_NAME${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # TODAY (live data)
-echo "  ${BLUE}TODAY (live):${NC}"
+CURRENT_TIME=$(date -u '+%H:%M UTC')
+echo "  ${BLUE}TODAY (live @ ${CURRENT_TIME}):${NC}"
 printf "    Input:  %10s | Output: %10s | Total: %10s | Cost: ${YELLOW}\$%s${NC}\n" \
   "$TODAY_LIVE_INPUT" "$TODAY_LIVE_OUTPUT" "$TODAY_TOKENS" "$TODAY_COST"
 
