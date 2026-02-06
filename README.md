@@ -128,6 +128,8 @@ Weekly/Monthly Aggregator (reads history)
 
 Prices are pulled from Anthropic's official rates (as of Feb 2026):
 
+**Official Source:** https://www.anthropic.com/pricing
+
 **Haiku 4.5:**
 - Input: $0.80 per 1M tokens
 - Output: $4.00 per 1M tokens
@@ -141,6 +143,8 @@ Prices are pulled from Anthropic's official rates (as of Feb 2026):
 - Output: $75.00 per 1M tokens
 
 The script automatically calculates costs based on the primary model detected in your sessions.
+
+⚠️ **Note:** Pricing may change. Always verify against https://www.anthropic.com/pricing for the latest rates. To update pricing in the script, edit the `get_model_pricing()` function in `daily-token-counter.sh`.
 
 ## File Structure
 
