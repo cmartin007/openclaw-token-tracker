@@ -128,19 +128,19 @@ Weekly/Monthly Aggregator (reads history)
 
 **⚠️ IMPORTANT:** Always verify pricing at https://www.anthropic.com/pricing
 
-Prices included in this script (as of Feb 2026):
+Prices included in this script (verified Feb 6, 2026):
 
 **Haiku 4.5:**
-- Input: $0.80 per 1M tokens
-- Output: $4.00 per 1M tokens
+- Input: $1.00 per 1M tokens
+- Output: $5.00 per 1M tokens
 
 **Sonnet 4.5:**
 - Input: $3.00 per 1M tokens  
 - Output: $15.00 per 1M tokens
 
-**Opus 4.5:**
-- Input: $15.00 per 1M tokens
-- Output: $75.00 per 1M tokens
+**Opus 4.6:**
+- Input: $5.00 per 1M tokens (for prompts ≤200K tokens)
+- Output: $25.00 per 1M tokens (for prompts ≤200K tokens)
 
 The script automatically calculates costs based on the primary model detected in your sessions.
 

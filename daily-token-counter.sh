@@ -71,22 +71,24 @@ fi
 
 # Get pricing for a model
 # ⚠️ IMPORTANT: Verify pricing against https://www.anthropic.com/pricing
+# Last verified: Feb 6, 2026
 get_model_pricing() {
   local MODEL=$1
   case "$MODEL" in
     "claude-haiku-4-5")
-      echo "0.0000008|0.000004|Claude Haiku 4.5 (\$0.80/M in, \$4.00/M out)"
+      # Input: $1/M, Output: $5/M (verified Feb 2026)
+      echo "0.000001|0.000005|Claude Haiku 4.5 (\$1.00/M in, \$5.00/M out)"
       ;;
     "claude-sonnet-4-5")
-      # ⚠️ Update if pricing changes - verify at https://www.anthropic.com/pricing
+      # Input: $3/M, Output: $15/M (verified Feb 2026)
       echo "0.000003|0.000015|Claude Sonnet 4.5 (\$3.00/M in, \$15.00/M out)"
       ;;
-    "claude-opus-4-5")
-      # ⚠️ Update if pricing changes - verify at https://www.anthropic.com/pricing
-      echo "0.000015|0.000075|Claude Opus 4.5 (\$15.00/M in, \$75.00/M out)"
+    "claude-opus-4-6")
+      # Input: $5/M (≤200K), Output: $25/M (≤200K) (verified Feb 2026)
+      echo "0.000005|0.000025|Claude Opus 4.6 (\$5.00/M in, \$25.00/M out)"
       ;;
     *)
-      echo "0.0000008|0.000004|Unknown Model - Using Haiku rates (\$0.80/M in, \$4.00/M out) ⚠️ VERIFY at https://www.anthropic.com/pricing"
+      echo "0.000001|0.000005|Unknown Model - Using Haiku rates (\$1.00/M in, \$5.00/M out) ⚠️ VERIFY at https://www.anthropic.com/pricing"
       ;;
   esac
 }
