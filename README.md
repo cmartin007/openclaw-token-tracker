@@ -126,25 +126,41 @@ Weekly/Monthly Aggregator (reads history)
 
 ## Pricing Accuracy
 
-Prices are pulled from Anthropic's official rates (as of Feb 2026):
+**⚠️ IMPORTANT:** Always verify pricing at https://www.anthropic.com/pricing
 
-**Official Source:** https://www.anthropic.com/pricing
+Prices included in this script (as of Feb 2026):
 
 **Haiku 4.5:**
 - Input: $0.80 per 1M tokens
 - Output: $4.00 per 1M tokens
 
-**Sonnet 4.0:**
-- Input: $3.00 per 1M tokens
+**Sonnet 4.5:**
+- Input: $3.00 per 1M tokens  
 - Output: $15.00 per 1M tokens
 
-**Opus 4.1:**
+**Opus 4.5:**
 - Input: $15.00 per 1M tokens
 - Output: $75.00 per 1M tokens
 
 The script automatically calculates costs based on the primary model detected in your sessions.
 
-⚠️ **Note:** Pricing may change. Always verify against https://www.anthropic.com/pricing for the latest rates. To update pricing in the script, edit the `get_model_pricing()` function in `daily-token-counter.sh`.
+### Updating Prices
+
+If pricing changes or you use different models:
+
+1. Check official source: https://www.anthropic.com/pricing
+2. Edit `get_model_pricing()` function in `daily-token-counter.sh`
+3. Update the case statement with new model names and prices
+4. Test with: `./daily-token-counter.sh`
+
+**Example:**
+```bash
+"claude-my-new-model")
+  echo "INPUT_COST|OUTPUT_COST|Model Name (description)"
+  ;;
+```
+
+**Note:** If the script detects an unknown model, it will warn you to verify pricing.
 
 ## File Structure
 

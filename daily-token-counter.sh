@@ -70,20 +70,23 @@ fi
 # ============================================================================
 
 # Get pricing for a model
+# ⚠️ IMPORTANT: Verify pricing against https://www.anthropic.com/pricing
 get_model_pricing() {
   local MODEL=$1
   case "$MODEL" in
     "claude-haiku-4-5")
       echo "0.0000008|0.000004|Claude Haiku 4.5 (\$0.80/M in, \$4.00/M out)"
       ;;
-    "claude-sonnet-4-0")
-      echo "0.000003|0.000015|Claude Sonnet 4.0 (\$3.00/M in, \$15.00/M out)"
+    "claude-sonnet-4-5")
+      # ⚠️ Update if pricing changes - verify at https://www.anthropic.com/pricing
+      echo "0.000003|0.000015|Claude Sonnet 4.5 (\$3.00/M in, \$15.00/M out)"
       ;;
-    "claude-opus-4-1")
-      echo "0.000015|0.000075|Claude Opus 4.1 (\$15.00/M in, \$75.00/M out)"
+    "claude-opus-4-5")
+      # ⚠️ Update if pricing changes - verify at https://www.anthropic.com/pricing
+      echo "0.000015|0.000075|Claude Opus 4.5 (\$15.00/M in, \$75.00/M out)"
       ;;
     *)
-      echo "0.0000008|0.000004|Unknown Model (\$0.80/M in, \$4.00/M out)"
+      echo "0.0000008|0.000004|Unknown Model - Using Haiku rates (\$0.80/M in, \$4.00/M out) ⚠️ VERIFY at https://www.anthropic.com/pricing"
       ;;
   esac
 }
