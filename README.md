@@ -194,11 +194,21 @@ To use `/tokens` in Telegram:
 
 ## Cron Scheduling
 
-### Daily Snapshot (Recommended)
+### Daily Snapshot (23:55 UTC)
 ```bash
 55 23 * * * /home/openclaw/.openclaw/workspace/token-history-logger.sh >/dev/null 2>&1
 ```
-Runs 5 minutes before midnight UTC. Captures end-of-day totals.
+Runs 5 minutes before midnight UTC. Captures end-of-day totals from OpenClaw sessions.
+
+### Daily Backfill (00:05 UTC)
+```bash
+5 0 * * * /home/openclaw/.openclaw/workspace/git-repos/openclaw-token-tracker/backfill-token-history.sh >> /tmp/backfill.log 2>&1
+```
+Runs 5 minutes after midnight UTC. Fetches complete usage data from Anthropic Admin API and stores actual costs by model and usage type (uncached, cache read, cache write, output).
+
+**Requirements:** 
+- Anthropic Admin API key stored in `pass` at `anthropic/admin-api-key`
+- `jq` and `curl` installed
 
 ### Via OpenClaw Gateway
 ```bash
