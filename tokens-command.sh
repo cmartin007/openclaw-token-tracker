@@ -22,6 +22,18 @@ get_model_pricing() {
   esac
 }
 
+# Function to format large numbers
+format_num() {
+  local num=$1
+  if [[ $num -ge 1000000 ]]; then
+    echo "$(echo "scale=2; $num / 1000000" | bc)M"
+  elif [[ $num -ge 1000 ]]; then
+    echo "$(echo "scale=1; $num / 1000" | bc)K"
+  else
+    echo "$num"
+  fi
+}
+
 # Function to show breakdown for a time period
 show_period_breakdown() {
   local period_name=$1
@@ -37,6 +49,7 @@ show_period_breakdown() {
   done | sort -u)
   
   PERIOD_TOTAL_COST=0
+  PERIOD_TOTAL_TOKENS=0
   
   for MODEL in $MODELS; do
     [[ -z "$MODEL" ]] && continue
@@ -77,19 +90,22 @@ show_period_breakdown() {
       TOTAL_COST=$(echo "scale=4; $U_COST + $C_COST + $O_COST" | bc)
       
       PERIOD_TOTAL_COST=$(echo "scale=4; $PERIOD_TOTAL_COST + $TOTAL_COST" | bc)
+      PERIOD_TOTAL_TOKENS=$((PERIOD_TOTAL_TOKENS + TOTAL))
       
-      echo "   **$MODEL**"
-      echo "      📥 Uncached: $PERIOD_U tokens (\$$U_COST)"
+      # Format model name for display
+      MODEL_SHORT=$(echo "$MODEL" | sed 's/claude-//; s/-[0-9]*$//')
+      
+      echo "   **$MODEL_SHORT** | $(format_num $TOTAL) tokens | **\$$TOTAL_COST**"
+      echo "      📥 Uncached: $(format_num $PERIOD_U) tokens (\$$U_COST)"
       if [[ $PERIOD_C -gt 0 ]]; then
-        echo "      💾 Cached: $PERIOD_C tokens (\$$C_COST)"
+        echo "      💾 Cached:   $(format_num $PERIOD_C) tokens (\$$C_COST)"
       fi
-      echo "      📤 Output: $PERIOD_O tokens (\$$O_COST)"
-      echo "      💰 **\$$TOTAL_COST**"
+      echo "      📤 Output:   $(format_num $PERIOD_O) tokens (\$$O_COST)"
       echo ""
     fi
   done
   
-  echo "   **Subtotal: \$$PERIOD_TOTAL_COST**"
+  echo "   **SUBTOTAL: $(format_num $PERIOD_TOTAL_TOKENS) tokens | \$$PERIOD_TOTAL_COST**"
   echo ""
 }
 
