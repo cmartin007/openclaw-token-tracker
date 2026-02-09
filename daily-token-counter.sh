@@ -14,6 +14,10 @@
 #   - Added atomic file writes for history
 #   - Added model validation against known list
 #   - Added date format validation for history files
+# - CONFIGURATION IMPROVEMENTS (Feb 9, 2026):
+#   - Externalized pricing to pricing.json config file
+#   - Added pricing file validation
+#   - Made pricing updates easier (no code changes needed)
 
 set -e
 
@@ -81,6 +85,10 @@ fi
 # CONFIGURATION
 # ============================================================================
 
+# Get script directory for relative paths
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PRICING_FILE="${PRICING_FILE:-$SCRIPT_DIR/pricing.json}"
+
 # Time ranges (cross-platform: works on GNU date and BSD date)
 TODAY=$(date -u '+%Y-%m-%d')
 
@@ -105,7 +113,26 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 # ============================================================================
-# PHASE 2: HISTORY DIRECTORY SETUP (Bug #4 Fix)
+# PHASE 2: PRICING FILE VALIDATION
+# ============================================================================
+
+# Check if pricing file exists
+if [[ ! -f "$PRICING_FILE" ]]; then
+  echo "❌ Error: Pricing configuration file not found: $PRICING_FILE"
+  echo "   Create it with model pricing data or set PRICING_FILE environment variable"
+  echo "   See: https://www.anthropic.com/pricing"
+  exit 1
+fi
+
+# Validate pricing file is valid JSON
+if ! jq -e '.models' "$PRICING_FILE" > /dev/null 2>&1; then
+  echo "❌ Error: Invalid pricing configuration file: $PRICING_FILE"
+  echo "   File must be valid JSON with a 'models' object"
+  exit 1
+fi
+
+# ============================================================================
+# PHASE 3: HISTORY DIRECTORY SETUP (Bug #4 Fix)
 # ============================================================================
 
 # Auto-create history directory if missing
@@ -120,47 +147,34 @@ fi
 # FUNCTIONS
 # ============================================================================
 
-# Validate and get pricing for a model
-# ⚠️ IMPORTANT: Verify pricing against https://www.anthropic.com/pricing
-# Last verified: Feb 6, 2026
+# Validate and get pricing for a model from pricing.json
+# Reads from external config file for easy updates
 get_model_pricing() {
   local MODEL=$1
   
-  # Whitelist of known models
-  local VALID_MODELS=(
-    "claude-haiku-4-5"
-    "claude-sonnet-4-5"
-    "claude-opus-4-6"
-  )
-  
-  # Check if model is in whitelist
-  local found=0
-  for valid_model in "${VALID_MODELS[@]}"; do
-    if [[ "$MODEL" == "$valid_model" ]]; then
-      found=1
-      break
-    fi
-  done
-  
-  # If model not found, error out instead of defaulting
-  if [[ $found -eq 0 ]]; then
+  # Check if model exists in pricing file
+  if ! jq -e ".models.\"$MODEL\"" "$PRICING_FILE" > /dev/null 2>&1; then
+    echo "❌ Error: Unknown model '$MODEL' not found in pricing file" >&2
+    echo "   Available models:" >&2
+    jq -r '.models | keys[]' "$PRICING_FILE" | sed 's/^/     - /' >&2
+    echo "   Update: $PRICING_FILE" >&2
+    echo "   Source: $(jq -r '.source // "https://www.anthropic.com/pricing"' "$PRICING_FILE")" >&2
     return 1
   fi
   
-  case "$MODEL" in
-    "claude-haiku-4-5")
-      # Input: $1/M, Output: $5/M (verified Feb 2026)
-      echo "0.000001|0.000005|Claude Haiku 4.5 (\$1.00/M in, \$5.00/M out)"
-      ;;
-    "claude-sonnet-4-5")
-      # Input: $3/M, Output: $15/M (verified Feb 2026)
-      echo "0.000003|0.000015|Claude Sonnet 4.5 (\$3.00/M in, \$15.00/M out)"
-      ;;
-    "claude-opus-4-6")
-      # Input: $5/M (≤200K), Output: $25/M (≤200K) (verified Feb 2026)
-      echo "0.000005|0.000025|Claude Opus 4.6 (\$5.00/M in, \$25.00/M out)"
-      ;;
-  esac
+  # Extract pricing data
+  local INPUT_COST=$(jq -r ".models.\"$MODEL\".input_cost_per_token" "$PRICING_FILE")
+  local OUTPUT_COST=$(jq -r ".models.\"$MODEL\".output_cost_per_token" "$PRICING_FILE")
+  local DISPLAY_NAME=$(jq -r ".models.\"$MODEL\".display_name" "$PRICING_FILE")
+  
+  # Validate extracted data
+  if [[ -z "$INPUT_COST" || -z "$OUTPUT_COST" || -z "$DISPLAY_NAME" ]]; then
+    echo "❌ Error: Invalid pricing data for model '$MODEL'" >&2
+    return 1
+  fi
+  
+  # Return in pipe-delimited format (for backward compatibility)
+  echo "$INPUT_COST|$OUTPUT_COST|$DISPLAY_NAME"
 }
 
 # Sum tokens from history files in a date range
@@ -220,7 +234,7 @@ show_period_stats() {
 }
 
 # ============================================================================
-# PHASE 3: GET SESSION DATA WITH VALIDATION (Bug #2 + #3 Fix)
+# PHASE 4: GET SESSION DATA WITH VALIDATION (Bug #2 + #3 Fix)
 # ============================================================================
 
 # Get sessions JSON
@@ -267,17 +281,23 @@ MODEL_PRICING_STATUS=$?
 read -r INPUT_COST OUTPUT_COST MODEL_NAME <<< "$PRICING_OUTPUT"
 IFS="$SAVED_IFS"
 
-# Validate model was recognized
+# Validate model was recognized and pricing data was parsed
 if [[ $MODEL_PRICING_STATUS -ne 0 ]]; then
-  echo "❌ Error: Unknown or unsupported model: $PRIMARY_MODEL"
-  echo "   Supported models: claude-haiku-4-5, claude-sonnet-4-5, claude-opus-4-6"
-  echo "   Update pricing table at: $0"
-  echo "   Or check your OpenClaw config: https://docs.openclaw.ai/config"
+  echo "❌ Error: Failed to get pricing for model: $PRIMARY_MODEL"
+  echo "   (See error details above)"
+  exit 1
+fi
+
+# Validate parsed pricing data isn't empty
+if [[ -z "$INPUT_COST" || -z "$OUTPUT_COST" ]]; then
+  echo "❌ Error: Failed to parse pricing data for model: $PRIMARY_MODEL"
+  echo "   Input cost: '$INPUT_COST', Output cost: '$OUTPUT_COST'"
+  echo "   Check pricing file: $PRICING_FILE"
   exit 1
 fi
 
 # ============================================================================
-# PHASE 4: CALCULATE TODAY'S CUMULATIVE DATA (since 00:00 UTC)
+# PHASE 5: CALCULATE TODAY'S CUMULATIVE DATA (since 00:00 UTC)
 # ============================================================================
 
 # Get live session data
@@ -311,7 +331,7 @@ TODAY_TOKENS=$((TODAY_INPUT + TODAY_OUTPUT))
 TODAY_COST=$(awk "BEGIN {printf \"%.4f\", $TODAY_INPUT * $INPUT_COST + $TODAY_OUTPUT * $OUTPUT_COST}")
 
 # ============================================================================
-# PHASE 5: OUTPUT REPORT
+# PHASE 6: OUTPUT REPORT
 # ============================================================================
 
 echo ""
@@ -368,5 +388,17 @@ printf "│  ━━━━━━━━━━━━━━━━━━━━━\n"
 printf "│  💰 Cost:     ${YELLOW}\$%-8s${NC}\n" "$MONTH_COST"
 echo "│  (current time: ${CURRENT_TIME})"
 echo "└────────────────────────────────"
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "⚠️  COST ESTIMATES - Base pricing only"
+echo "   Real costs may vary due to:"
+echo "   • Prompt caching (can reduce costs by 90%)"
+echo "   • Long context >200K tokens (2x cost increase)"
+echo "   • Batch API usage (50% discount)"
+echo "   • Tool use overhead (web search, code execution)"
+echo ""
+echo "   For actual costs, run: ./backfill-token-history.sh"
+echo "   Or check: https://console.anthropic.com/settings/billing"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "✅ Generated by bash (0 tokens) 🐕"

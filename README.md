@@ -124,43 +124,74 @@ Weekly/Monthly Aggregator (reads history)
 
 **Result:** Costs $0/month to track and $0.0015-0.003/day to use the bot.
 
-## Pricing Accuracy
+## Pricing Configuration
 
-**⚠️ IMPORTANT:** Always verify pricing at https://www.anthropic.com/pricing
+**⚠️ IMPORTANT:** This tracker shows **estimated** costs using base pricing only.
 
-Prices included in this script (verified Feb 6, 2026):
+### What's Included ✅
+- Base input/output token pricing
+- Per-model cost calculation
+- Historical usage tracking
 
-**Haiku 4.5:**
-- Input: $1.00 per 1M tokens
-- Output: $5.00 per 1M tokens
+### What's NOT Included ❌
+- **Prompt caching** (90% discount on cache reads) - See [CACHE_PRICING.md](CACHE_PRICING.md)
+- **Long context** (2x cost for >200K tokens)
+- **Batch API** (50% discount)
+- **Fast mode** (6x cost multiplier)
+- **Tool use overhead** (web search, code execution, etc.)
 
-**Sonnet 4.5:**
-- Input: $3.00 per 1M tokens  
-- Output: $15.00 per 1M tokens
+💡 **Cache pricing can reduce costs by 50-90%!** Read [CACHE_PRICING.md](CACHE_PRICING.md) for details.
 
-**Opus 4.6:**
-- Input: $5.00 per 1M tokens (for prompts ≤200K tokens)
-- Output: $25.00 per 1M tokens (for prompts ≤200K tokens)
+### Getting Accurate Costs
 
-The script automatically calculates costs based on the primary model detected in your sessions.
+For real costs including all modifiers:
+
+1. **Use the backfill script** - Fetches actual costs from Anthropic API
+   ```bash
+   ./backfill-token-history.sh
+   ```
+
+2. **Check your billing** - https://console.anthropic.com/settings/billing
+
+### Current Base Pricing (verified Feb 9, 2026)
+- **Haiku 4.5:** $1.00/M in, $5.00/M out
+- **Sonnet 4.5:** $3.00/M in, $15.00/M out
+- **Opus 4.6:** $5.00/M in, $25.00/M out (base rate)
+
+Source: https://platform.claude.com/docs/en/about-claude/pricing
+
+The script automatically:
+- Detects the model from your OpenClaw sessions
+- Loads pricing from `pricing.json`
+- Calculates **estimated** costs based on input/output tokens
 
 ### Updating Prices
 
-If pricing changes or you use different models:
+**Easy updates - no code changes needed!**
 
-1. Check official source: https://www.anthropic.com/pricing
-2. Edit `get_model_pricing()` function in `daily-token-counter.sh`
-3. Update the case statement with new model names and prices
-4. Test with: `./daily-token-counter.sh`
+1. **Verify current pricing** at https://www.anthropic.com/pricing
+2. **Edit pricing.json**:
+   ```bash
+   nano pricing.json
+   ```
+3. **Update the cost values**:
+   ```json
+   {
+     "models": {
+       "claude-haiku-4-5": {
+         "input_cost_per_token": 0.000001,
+         "output_cost_per_token": 0.000005,
+         "display_name": "Claude Haiku 4.5 ($1.00/M in, $5.00/M out)"
+       }
+     }
+   }
+   ```
+4. **Test the update**:
+   ```bash
+   ./daily-token-counter.sh
+   ```
 
-**Example:**
-```bash
-"claude-my-new-model")
-  echo "INPUT_COST|OUTPUT_COST|Model Name (description)"
-  ;;
-```
-
-**Note:** If the script detects an unknown model, it will warn you to verify pricing.
+**See PRICING.md for detailed instructions** on updating pricing, adding new models, and troubleshooting.
 
 ## File Structure
 
@@ -169,10 +200,15 @@ openclaw-token-tracker/
 ├── README.md                      # This file
 ├── daily-token-counter.sh         # Main counter script
 ├── token-history-logger.sh        # History snapshot logger
-└── docs/
-    ├── SETUP.md                   # Installation guide
-    ├── ARCHITECTURE.md            # Technical details
-    └── PRICING.md                 # Pricing reference
+├── tokens-command.sh              # Telegram bot command handler
+├── backfill-token-history.sh      # Historical data fetcher
+├── pricing.json                   # Model pricing configuration
+├── PRICING.md                     # Pricing update guide
+├── CACHE_PRICING.md               # Prompt caching pricing guide (NEW!)
+├── PRICING_REVIEW.md              # Official pricing analysis
+├── BUGFIX.md                      # Bug fixes documentation
+├── MEDIUM_PRIORITY_FIXES.md       # Robustness improvements
+└── ABOUT_OPENCLAW.md              # Philosophy and architecture
 ```
 
 ## Telegram Bot Integration
