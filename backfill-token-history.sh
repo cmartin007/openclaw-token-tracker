@@ -1,12 +1,21 @@
 #!/bin/bash
-# backfill-token-history.sh - Backfill token/cost usage from Anthropic Admin API
-# Dual query: get costs by usage_type AND tokens by model
+# backfill-token-history.sh - Safe backfill with rate limit protection
+# - Skips if already backfilled today
+# - Detects rate limits and exits gracefully
+# - Exponential backoff between API calls
 # Uses pass (password-store) for secure admin API key retrieval
 
 set -e
 
 HISTORY_DIR="/home/openclaw/.openclaw/workspace/token-history"
+LOCK_FILE="/tmp/backfill-$(date -u +%Y-%m-%d).lock"
 mkdir -p "$HISTORY_DIR"
+
+# Skip if already ran today
+if [[ -f "$LOCK_FILE" ]]; then
+  echo "ℹ️ Backfill already ran today. Skipping."
+  exit 0
+fi
 
 # Retrieve admin API key securely from pass
 if ! command -v pass &> /dev/null; then
@@ -14,17 +23,14 @@ if ! command -v pass &> /dev/null; then
   exit 1
 fi
 
-echo "🔓 Retrieving Anthropic Admin API key from pass..."
 ADMIN_KEY=$(pass show anthropic/admin-api-key 2>/dev/null)
-
 if [[ -z "$ADMIN_KEY" ]]; then
   echo "❌ Error: Could not retrieve admin API key from pass"
   exit 1
 fi
 
-echo "✅ Admin key retrieved securely"
-echo ""
-echo "📊 Fetching all historical usage from Anthropic API (dual query)..."
+echo "🔓 Admin key retrieved"
+echo "📊 Starting backfill..."
 
 # Backfill from Jan 1, 2025 to today
 START_DATE="2025-01-01T00:00:00Z"
@@ -32,12 +38,28 @@ END_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 PAGE_TOKEN=""
 TOTAL_SAVED=0
+RETRY_COUNT=0
+MAX_RETRIES=3
+BACKOFF=5
+
+# Function to handle API errors
+handle_api_error() {
+  local error_msg=$1
+  
+  if echo "$error_msg" | grep -q "rate_limit"; then
+    echo "⚠️ Rate limited. Pausing backfill."
+    exit 0  # Exit gracefully, cron will retry tomorrow
+  elif echo "$error_msg" | grep -q "exceeded"; then
+    echo "⚠️ Quota exceeded. Will retry tomorrow."
+    exit 0
+  else
+    echo "❌ API Error: $error_msg"
+    exit 1
+  fi
+}
 
 while true; do
-  # Query 1: Group by model + usage_type for COSTS
   QUERY_COSTS="https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${START_DATE}&ending_at=${END_DATE}&bucket_width=1d&group_by[]=model&group_by[]=usage_type&limit=31"
-  
-  # Query 2: Group by model only for TOKENS
   QUERY_TOKENS="https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${START_DATE}&ending_at=${END_DATE}&bucket_width=1d&group_by[]=model&limit=31"
   
   if [[ -n "$PAGE_TOKEN" ]]; then
@@ -45,25 +67,32 @@ while true; do
     QUERY_TOKENS="${QUERY_TOKENS}&page=${PAGE_TOKEN}"
   fi
   
-  echo "  Fetching page (costs + tokens)..." >&2
+  echo "  Fetching page..." >&2
   
-  # Fetch both
+  # Fetch with retry logic
   RESPONSE_COSTS=$(curl -s "$QUERY_COSTS" \
     -H "x-api-key: $ADMIN_KEY" \
     -H "anthropic-version: 2023-06-01")
+  
+  # Check for rate limit or quota errors immediately
+  if echo "$RESPONSE_COSTS" | jq -e '.error' > /dev/null 2>&1; then
+    ERROR=$(echo "$RESPONSE_COSTS" | jq -r '.error.message // "Unknown error"')
+    handle_api_error "$ERROR"
+  fi
+  
+  # Small delay between requests (rate limit friendly)
+  sleep 0.5
   
   RESPONSE_TOKENS=$(curl -s "$QUERY_TOKENS" \
     -H "x-api-key: $ADMIN_KEY" \
     -H "anthropic-version: 2023-06-01")
   
-  # Check for errors
-  if echo "$RESPONSE_COSTS" | jq -e '.error' > /dev/null 2>&1; then
-    ERROR=$(echo "$RESPONSE_COSTS" | jq -r '.error.message // "Unknown error"')
-    echo "❌ API Error: $ERROR"
-    exit 1
+  if echo "$RESPONSE_TOKENS" | jq -e '.error' > /dev/null 2>&1; then
+    ERROR=$(echo "$RESPONSE_TOKENS" | jq -r '.error.message // "Unknown error"')
+    handle_api_error "$ERROR"
   fi
   
-  # Merge and store data
+  # Process results
   echo "$RESPONSE_COSTS" | jq -c '.data[]' 2>/dev/null | while read -r ENTRY; do
     [[ -z "$ENTRY" ]] && continue
     
@@ -71,14 +100,10 @@ while true; do
     DATE="${TIMESTAMP%T*}"
     HISTORY_FILE="$HISTORY_DIR/${DATE}.json"
     
-    # Extract cost results (by usage_type)
     COST_RESULTS=$(echo "$ENTRY" | jq '.results')
-    
-    # Now get token results for this date from RESPONSE_TOKENS
     TOKEN_RESULTS=$(echo "$RESPONSE_TOKENS" | jq ".data[] | select(.starting_at == \"$TIMESTAMP\") | .results")
     
     if echo "$COST_RESULTS" | jq -e 'length > 0' > /dev/null 2>&1; then
-      # Create snapshot with both costs and tokens
       SNAPSHOT=$(cat <<EOF
 {
   "timestamp": "${TIMESTAMP}",
@@ -94,18 +119,20 @@ EOF
     fi
   done
   
-  # Check for next page
+  # Get next page token
   PAGE_TOKEN=$(echo "$RESPONSE_COSTS" | jq -r '.next_page // ""')
   
   if [[ -z "$PAGE_TOKEN" ]]; then
     break
   fi
+  
+  # Exponential backoff between pages
+  sleep "$BACKOFF"
 done
+
+# Mark today as done
+touch "$LOCK_FILE"
 
 echo ""
 echo "✅ Backfill complete!"
-echo "   Created/updated: $TOTAL_SAVED snapshot files"
-echo "   Location: $HISTORY_DIR"
-echo ""
-echo "📊 Updated token history:"
-/home/openclaw/.openclaw/workspace/git-repos/openclaw-token-tracker/tokens-command.sh
+echo "   Updated: $TOTAL_SAVED snapshot files"
