@@ -1,0 +1,81 @@
+{
+  "version": "1.2.0",
+  "updated": "2026-02-09",
+  "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+  "notice": "This file contains BASE PRICING only. Real costs may vary due to prompt caching, long context (>200K tokens), batch API discounts, fast mode, tool use, and data residency. Use backfill script for actual costs.",
+  "cache_pricing": {
+    "description": "Prompt caching multipliers apply to base input costs",
+    "write_5m_multiplier": 1.25,
+    "write_1h_multiplier": 2.0,
+    "read_multiplier": 0.1,
+    "note": "Cache reads provide 90% cost savings vs base input. These multipliers apply to ALL models."
+  },
+  "models": {
+    "claude-haiku-4-5": {
+      "input_cost_per_token": 0.000001,
+      "output_cost_per_token": 0.000005,
+      "display_name": "Claude Haiku 4.5 ($1.00/M in, $5.00/M out)",
+      "notes": "Latest Haiku, 25% more expensive than 3.5 but more capable"
+    },
+    "claude-haiku-3-5": {
+      "input_cost_per_token": 0.0000008,
+      "output_cost_per_token": 0.000004,
+      "display_name": "Claude Haiku 3.5 ($0.80/M in, $4.00/M out)",
+      "notes": "Previous generation, 20% cheaper than 4.5"
+    },
+    "claude-haiku-3": {
+      "input_cost_per_token": 0.00000025,
+      "output_cost_per_token": 0.00000125,
+      "display_name": "Claude Haiku 3 ($0.25/M in, $1.25/M out)",
+      "notes": "Oldest Haiku, significantly cheaper but less capable"
+    },
+    "claude-sonnet-4-5": {
+      "input_cost_per_token": 0.000003,
+      "output_cost_per_token": 0.000015,
+      "display_name": "Claude Sonnet 4.5 ($3.00/M in, $15.00/M out)",
+      "notes": "Latest Sonnet with extended context support"
+    },
+    "claude-sonnet-4": {
+      "input_cost_per_token": 0.000003,
+      "output_cost_per_token": 0.000015,
+      "display_name": "Claude Sonnet 4 ($3.00/M in, $15.00/M out)",
+      "notes": "Same pricing as 4.5, slightly older"
+    },
+    "claude-sonnet-3-7": {
+      "input_cost_per_token": 0.000003,
+      "output_cost_per_token": 0.000015,
+      "display_name": "Claude Sonnet 3.7 ($3.00/M in, $15.00/M out)",
+      "notes": "DEPRECATED - Same pricing but older model"
+    },
+    "claude-opus-4-6": {
+      "input_cost_per_token": 0.000005,
+      "output_cost_per_token": 0.000025,
+      "display_name": "Claude Opus 4.6 ($5.00/M in, $25.00/M out)",
+      "notes": "Latest Opus - Base pricing for ≤200K tokens. >200K tokens cost 2x more."
+    },
+    "claude-opus-4-5": {
+      "input_cost_per_token": 0.000005,
+      "output_cost_per_token": 0.000025,
+      "display_name": "Claude Opus 4.5 ($5.00/M in, $25.00/M out)",
+      "notes": "Same pricing as 4.6, slightly older"
+    },
+    "claude-opus-4-1": {
+      "input_cost_per_token": 0.000015,
+      "output_cost_per_token": 0.000075,
+      "display_name": "Claude Opus 4.1 ($15.00/M in, $75.00/M out)",
+      "notes": "Older Opus, 3x more expensive than 4.6"
+    },
+    "claude-opus-4": {
+      "input_cost_per_token": 0.000015,
+      "output_cost_per_token": 0.000075,
+      "display_name": "Claude Opus 4 ($15.00/M in, $75.00/M out)",
+      "notes": "Same pricing as 4.1"
+    },
+    "claude-opus-3": {
+      "input_cost_per_token": 0.000015,
+      "output_cost_per_token": 0.000075,
+      "display_name": "Claude Opus 3 ($15.00/M in, $75.00/M out)",
+      "notes": "DEPRECATED - Much more expensive than newer Opus models"
+    }
+  }
+}
