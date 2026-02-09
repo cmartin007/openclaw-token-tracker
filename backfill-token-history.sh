@@ -1,6 +1,7 @@
 #!/bin/bash
-# backfill-token-history.sh - Backfill token usage from Anthropic Admin API
+# backfill-token-history.sh - Backfill token/cost usage from Anthropic Admin API
 # Uses pass (password-store) for secure admin API key retrieval
+# Stores actual costs from API (input_no_cache, input_cache_read, input_cache_write_5m, output)
 
 set -e
 
@@ -23,7 +24,7 @@ fi
 
 echo "✅ Admin key retrieved securely"
 echo ""
-echo "📊 Fetching all historical usage from Anthropic API (grouped by model)..."
+echo "📊 Fetching all historical usage from Anthropic API (cost breakdown)..."
 
 # Backfill from Jan 1, 2025 to today
 START_DATE="2025-01-01T00:00:00Z"
@@ -33,8 +34,8 @@ PAGE_TOKEN=""
 TOTAL_SAVED=0
 
 while true; do
-  # Build query with model grouping
-  QUERY="https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${START_DATE}&ending_at=${END_DATE}&bucket_width=1d&group_by[]=model&limit=31"
+  # Build query - group by model and usage type to get costs
+  QUERY="https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${START_DATE}&ending_at=${END_DATE}&bucket_width=1d&group_by[]=model&group_by[]=usage_type&limit=31"
   
   if [[ -n "$PAGE_TOKEN" ]]; then
     QUERY="${QUERY}&page=${PAGE_TOKEN}"
@@ -54,7 +55,7 @@ while true; do
     exit 1
   fi
   
-  # Parse data for this page - store all results per day
+  # Parse data for this page - store all cost data per day
   echo "$RESPONSE" | jq -c '.data[]' 2>/dev/null | while read -r ENTRY; do
     [[ -z "$ENTRY" ]] && continue
     
@@ -66,7 +67,7 @@ while true; do
     
     # Only save if there are results
     if echo "$RESULTS" | jq -e 'length > 0' > /dev/null 2>&1; then
-      # Create or overwrite with all model data for this day
+      # Create or overwrite with all cost data for this day
       SNAPSHOT=$(cat <<EOF
 {
   "timestamp": "${TIMESTAMP}",

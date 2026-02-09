@@ -1,36 +1,15 @@
 #!/bin/bash
-# tokens-command.sh - Show token usage breakdown by model with multiple time periods
+# tokens-command.sh - Show cost breakdown by model and usage type
 
 TOKEN_HISTORY_DIR="/home/openclaw/.openclaw/workspace/token-history"
 
-# Model pricing (Anthropic Feb 2026)
-get_model_pricing() {
-  local model=$1
-  case "$model" in
-    *haiku*)
-      echo "1.00|0.20|5.00"
-      ;;
-    *sonnet*)
-      echo "3.00|0.60|15.00"
-      ;;
-    *opus*)
-      echo "15.00|3.00|75.00"
-      ;;
-    *)
-      echo "1.00|0.20|5.00"  # default to Haiku
-      ;;
-  esac
-}
-
-# Function to format large numbers
+# Function to format numbers
 format_num() {
   local num=$1
-  if [[ $num -ge 1000000 ]]; then
-    echo "$(echo "scale=2; $num / 1000000" | bc)M"
-  elif [[ $num -ge 1000 ]]; then
-    echo "$(echo "scale=1; $num / 1000" | bc)K"
+  if (( $(echo "$num >= 1" | bc -l) )); then
+    printf "%.2f" "$num"
   else
-    echo "$num"
+    printf "%.4f" "$num"
   fi
 }
 
@@ -49,67 +28,67 @@ show_period_breakdown() {
   done | sort -u)
   
   PERIOD_TOTAL_COST=0
-  PERIOD_TOTAL_TOKENS=0
   
   for MODEL in $MODELS; do
     [[ -z "$MODEL" ]] && continue
     
-    # Get pricing for this model (uncached|cache|output)
-    PRICING=$(get_model_pricing "$MODEL")
-    UNCACHED_PRICE=$(echo "$PRICING" | cut -d'|' -f1)
-    CACHE_PRICE=$(echo "$PRICING" | cut -d'|' -f2)
-    OUTPUT_PRICE=$(echo "$PRICING" | cut -d'|' -f3)
+    # Format model name for display
+    MODEL_SHORT=$(echo "$MODEL" | sed 's/Claude //; s/ 4\.[0-9]*//; s/.*\(Haiku\|Sonnet\|Opus\).*/\1/')
     
-    # Sum usage for this model over period
-    PERIOD_U=0
-    PERIOD_C=0
-    PERIOD_O=0
+    # Sum costs by usage type for this model over period
+    NO_CACHE_COST=0
+    CACHE_READ_COST=0
+    CACHE_WRITE_COST=0
+    OUTPUT_COST=0
     
     for i in $(seq 0 $((num_days - 1))); do
       date_file="$TOKEN_HISTORY_DIR/$(date -u -d "-$i days" +%Y-%m-%d).json" 2>/dev/null
       if [[ -f "$date_file" ]]; then
-        DATA=$(jq ".results[] | select(.model == \"$MODEL\") | {u: .uncached_input_tokens, c: .cache_read_input_tokens, o: .output_tokens}" "$date_file" 2>/dev/null | jq -s 'map({u, c, o}) | {u: map(.u) | add, c: map(.c) | add, o: map(.o) | add}' 2>/dev/null)
+        # Sum costs by usage type
+        COSTS=$(jq ".results[] | select(.model == \"$MODEL\") | {no_cache: (select(.usage_type == \"input_no_cache\") | .cost_usd), cache_read: (select(.usage_type == \"input_cache_read\") | .cost_usd), cache_write: (select(.usage_type | contains(\"cache_write\")) | .cost_usd), output: (select(.usage_type == \"output\") | .cost_usd)}" "$date_file" 2>/dev/null)
         
-        if [[ -n "$DATA" && "$DATA" != "null" ]]; then
-          U=$(echo "$DATA" | jq '.u // 0')
-          C=$(echo "$DATA" | jq '.c // 0')
-          O=$(echo "$DATA" | jq '.o // 0')
-          PERIOD_U=$((PERIOD_U + U))
-          PERIOD_C=$((PERIOD_C + C))
-          PERIOD_O=$((PERIOD_O + O))
-        fi
+        while read -r line; do
+          [[ -z "$line" ]] && continue
+          NC=$(echo "$line" | jq '.no_cache // 0')
+          CR=$(echo "$line" | jq '.cache_read // 0')
+          CW=$(echo "$line" | jq '.cache_write // 0')
+          OUT=$(echo "$line" | jq '.output // 0')
+          
+          NO_CACHE_COST=$(echo "$NO_CACHE_COST + $NC" | bc)
+          CACHE_READ_COST=$(echo "$CACHE_READ_COST + $CR" | bc)
+          CACHE_WRITE_COST=$(echo "$CACHE_WRITE_COST + $CW" | bc)
+          OUTPUT_COST=$(echo "$OUTPUT_COST + $OUT" | bc)
+        done < <(echo "$COSTS" | jq -s '.')
       fi
     done
     
-    TOTAL=$((PERIOD_U + PERIOD_C + PERIOD_O))
+    TOTAL_COST=$(echo "$NO_CACHE_COST + $CACHE_READ_COST + $CACHE_WRITE_COST + $OUTPUT_COST" | bc)
     
-    if [[ $TOTAL -gt 0 ]]; then
-      U_COST=$(echo "scale=4; $PERIOD_U * $UNCACHED_PRICE / 1000000" | bc)
-      C_COST=$(echo "scale=4; $PERIOD_C * $CACHE_PRICE / 1000000" | bc)
-      O_COST=$(echo "scale=4; $PERIOD_O * $OUTPUT_PRICE / 1000000" | bc)
-      TOTAL_COST=$(echo "scale=4; $U_COST + $C_COST + $O_COST" | bc)
+    if (( $(echo "$TOTAL_COST > 0" | bc -l) )); then
+      PERIOD_TOTAL_COST=$(echo "$PERIOD_TOTAL_COST + $TOTAL_COST" | bc)
       
-      PERIOD_TOTAL_COST=$(echo "scale=4; $PERIOD_TOTAL_COST + $TOTAL_COST" | bc)
-      PERIOD_TOTAL_TOKENS=$((PERIOD_TOTAL_TOKENS + TOTAL))
-      
-      # Format model name for display
-      MODEL_SHORT=$(echo "$MODEL" | sed 's/claude-//; s/-[0-9]*$//')
-      
-      echo "   **$MODEL_SHORT** | $(format_num $TOTAL) tokens | **\$$TOTAL_COST**"
-      echo "      📥 Uncached: $(format_num $PERIOD_U) tokens (\$$U_COST)"
-      if [[ $PERIOD_C -gt 0 ]]; then
-        echo "      💾 Cached:   $(format_num $PERIOD_C) tokens (\$$C_COST)"
+      echo "   **$MODEL_SHORT** | **\$$(format_num $TOTAL_COST)**"
+      if (( $(echo "$NO_CACHE_COST > 0" | bc -l) )); then
+        echo "      📥 Input (no cache): \$$(format_num $NO_CACHE_COST)"
       fi
-      echo "      📤 Output:   $(format_num $PERIOD_O) tokens (\$$O_COST)"
+      if (( $(echo "$CACHE_READ_COST > 0" | bc -l) )); then
+        echo "      💾 Input (cache read): \$$(format_num $CACHE_READ_COST)"
+      fi
+      if (( $(echo "$CACHE_WRITE_COST > 0" | bc -l) )); then
+        echo "      📝 Input (cache write): \$$(format_num $CACHE_WRITE_COST)"
+      fi
+      if (( $(echo "$OUTPUT_COST > 0" | bc -l) )); then
+        echo "      📤 Output: \$$(format_num $OUTPUT_COST)"
+      fi
       echo ""
     fi
   done
   
-  echo "   **SUBTOTAL: $(format_num $PERIOD_TOTAL_TOKENS) tokens | \$$PERIOD_TOTAL_COST**"
+  echo "   **SUBTOTAL: \$$(format_num $PERIOD_TOTAL_COST)**"
   echo ""
 }
 
-echo "📊 **Token Usage Breakdown by Model**"
+echo "💰 **Cost Breakdown by Model**"
 echo ""
 
 # Last 7 days
