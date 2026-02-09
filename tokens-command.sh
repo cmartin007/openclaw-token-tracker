@@ -1,79 +1,90 @@
 #!/bin/bash
-# tokens-command.sh - Telegram /tokens command handler
+# tokens-command.sh - Show token usage breakdown by model
 
 TOKEN_HISTORY_DIR="/home/openclaw/.openclaw/workspace/token-history"
-PRICING_IN=1        # $1.00 per 1M input tokens (Haiku 4.5)
-PRICING_OUT=5       # $5.00 per 1M output tokens (Haiku 4.5)
 
-echo "📊 **Token Usage Breakdown**"
-echo "🤖 **Model:** Claude Haiku 4.5 (\$1.00/M in, \$5.00/M out)"
+# Model pricing (Anthropic Feb 2026)
+get_model_pricing() {
+  local model=$1
+  case "$model" in
+    *haiku*)
+      echo "1.00|0.20|5.00"
+      ;;
+    *sonnet*)
+      echo "3.00|0.60|15.00"
+      ;;
+    *opus*)
+      echo "15.00|3.00|75.00"
+      ;;
+    *)
+      echo "1.00|0.20|5.00"  # default to Haiku
+      ;;
+  esac
+}
+
+echo "📊 **Token Usage Breakdown by Model (Last 30 Days)**"
 echo ""
 
-# TODAY (live)
-today=$(date -u +%Y-%m-%d)
-today_file="$TOKEN_HISTORY_DIR/${today}.json"
-
-today_in=0
-today_out=0
-
-if [[ -f "$today_file" ]]; then
-  today_in=$(jq '.inputTokens // 0' "$today_file" 2>/dev/null || echo 0)
-  today_out=$(jq '.outputTokens // 0' "$today_file" 2>/dev/null || echo 0)
-fi
-
-today_total=$((today_in + today_out))
-today_in_cost=$(echo "scale=4; $today_in * $PRICING_IN / 1000000" | bc)
-today_out_cost=$(echo "scale=4; $today_out * $PRICING_OUT / 1000000" | bc)
-today_cost=$(echo "scale=4; $today_in_cost + $today_out_cost" | bc)
-
-echo "**TODAY (live):**"
-echo "   Input: $today_in | Output: $today_out | Total: $today_total | Cost: \$$today_cost"
-echo ""
-
-# WEEKLY (last 7 days)
-weekly_in=0
-weekly_out=0
-
-for i in {0..6}; do
+# Collect all unique models from last 30 days
+MODELS=$(for i in {0..29}; do
   date_file="$TOKEN_HISTORY_DIR/$(date -u -d "-$i days" +%Y-%m-%d).json" 2>/dev/null
-  if [[ -f "$date_file" ]]; then
-    in=$(jq '.inputTokens // 0' "$date_file" 2>/dev/null || echo 0)
-    out=$(jq '.outputTokens // 0' "$date_file" 2>/dev/null || echo 0)
-    weekly_in=$((weekly_in + in))
-    weekly_out=$((weekly_out + out))
+  [[ -f "$date_file" ]] && jq -r '.results[]?.model // empty' "$date_file" 2>/dev/null
+done | sort -u)
+
+GRAND_TOTAL_COST=0
+
+for MODEL in $MODELS; do
+  [[ -z "$MODEL" ]] && continue
+  
+  # Get pricing for this model (uncached|cache|output)
+  PRICING=$(get_model_pricing "$MODEL")
+  UNCACHED_PRICE=$(echo "$PRICING" | cut -d'|' -f1)
+  CACHE_PRICE=$(echo "$PRICING" | cut -d'|' -f2)
+  OUTPUT_PRICE=$(echo "$PRICING" | cut -d'|' -f3)
+  
+  # Sum usage for this model over 30 days
+  MONTH_U=0
+  MONTH_C=0
+  MONTH_O=0
+  
+  for i in {0..29}; do
+    date_file="$TOKEN_HISTORY_DIR/$(date -u -d "-$i days" +%Y-%m-%d).json" 2>/dev/null
+    if [[ -f "$date_file" ]]; then
+      DATA=$(jq ".results[] | select(.model == \"$MODEL\") | {u: .uncached_input_tokens, c: .cache_read_input_tokens, o: .output_tokens}" "$date_file" 2>/dev/null | jq -s 'map({u, c, o}) | {u: map(.u) | add, c: map(.c) | add, o: map(.o) | add}' 2>/dev/null)
+      
+      if [[ -n "$DATA" && "$DATA" != "null" ]]; then
+        U=$(echo "$DATA" | jq '.u // 0')
+        C=$(echo "$DATA" | jq '.c // 0')
+        O=$(echo "$DATA" | jq '.o // 0')
+        MONTH_U=$((MONTH_U + U))
+        MONTH_C=$((MONTH_C + C))
+        MONTH_O=$((MONTH_O + O))
+      fi
+    fi
+  done
+  
+  TOTAL=$((MONTH_U + MONTH_C + MONTH_O))
+  
+  if [[ $TOTAL -gt 0 ]]; then
+    U_COST=$(echo "scale=4; $MONTH_U * $UNCACHED_PRICE / 1000000" | bc)
+    C_COST=$(echo "scale=4; $MONTH_C * $CACHE_PRICE / 1000000" | bc)
+    O_COST=$(echo "scale=4; $MONTH_O * $OUTPUT_PRICE / 1000000" | bc)
+    TOTAL_COST=$(echo "scale=4; $U_COST + $C_COST + $O_COST" | bc)
+    
+    GRAND_TOTAL_COST=$(echo "scale=4; $GRAND_TOTAL_COST + $TOTAL_COST" | bc)
+    
+    echo "**$MODEL**"
+    echo "   Uncached: $MONTH_U @ \$$UNCACHED_PRICE/M = \$$U_COST"
+    if [[ $MONTH_C -gt 0 ]]; then
+      echo "   Cached:   $MONTH_C @ \$$CACHE_PRICE/M = \$$C_COST"
+    fi
+    echo "   Output:   $MONTH_O @ \$$OUTPUT_PRICE/M = \$$O_COST"
+    echo "   Total: $TOTAL tokens | **\$$TOTAL_COST**"
+    echo ""
   fi
 done
 
-weekly_total=$((weekly_in + weekly_out))
-weekly_in_cost=$(echo "scale=4; $weekly_in * $PRICING_IN / 1000000" | bc)
-weekly_out_cost=$(echo "scale=4; $weekly_out * $PRICING_OUT / 1000000" | bc)
-weekly_cost=$(echo "scale=4; $weekly_in_cost + $weekly_out_cost" | bc)
-
-echo "**WEEKLY (last 7 days):**"
-echo "   Input: $weekly_in | Output: $weekly_out | Total: $weekly_total | Cost: \$$weekly_cost"
-echo ""
-
-# MONTHLY (last 30 days)
-monthly_in=0
-monthly_out=0
-
-for i in {0..29}; do
-  date_file="$TOKEN_HISTORY_DIR/$(date -u -d "-$i days" +%Y-%m-%d).json" 2>/dev/null
-  if [[ -f "$date_file" ]]; then
-    in=$(jq '.inputTokens // 0' "$date_file" 2>/dev/null || echo 0)
-    out=$(jq '.outputTokens // 0' "$date_file" 2>/dev/null || echo 0)
-    monthly_in=$((monthly_in + in))
-    monthly_out=$((monthly_out + out))
-  fi
-done
-
-monthly_total=$((monthly_in + monthly_out))
-monthly_in_cost=$(echo "scale=4; $monthly_in * $PRICING_IN / 1000000" | bc)
-monthly_out_cost=$(echo "scale=4; $monthly_out * $PRICING_OUT / 1000000" | bc)
-monthly_cost=$(echo "scale=4; $monthly_in_cost + $monthly_out_cost" | bc)
-
-echo "**MONTHLY (last 30 days):**"
-echo "   Input: $monthly_in | Output: $monthly_out | Total: $monthly_total | Cost: \$$monthly_cost"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "💰 **TOTAL COST (Last 30 Days): \$$GRAND_TOTAL_COST**"
 echo ""
 echo "📁 History stored in: $TOKEN_HISTORY_DIR"
-echo "Generated by bash (0 tokens)"

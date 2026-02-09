@@ -54,16 +54,19 @@ while true; do
     exit 1
   fi
   
-  # Parse data for this page
-  DATES=$(echo "$RESPONSE" | jq -r '.data[] | "\(.starting_at) \(.results[0].uncached_input_tokens // 0) \(.results[0].output_tokens // 0)"' 2>/dev/null)
-  
-  while read -r LINE; do
-    [[ -z "$LINE" ]] && continue
+  # Parse data for this page - select only entries with results
+  echo "$RESPONSE" | jq -c '.data[] | select(.results | length > 0)' 2>/dev/null | while read -r ENTRY; do
+    [[ -z "$ENTRY" ]] && continue
     
-    TIMESTAMP=$(echo "$LINE" | awk '{print $1}')
+    TIMESTAMP=$(echo "$ENTRY" | jq -r '.starting_at')
     DATE="${TIMESTAMP%T*}"
-    INPUT=$(echo "$LINE" | awk '{print $2}')
-    OUTPUT=$(echo "$LINE" | awk '{print $3}')
+    
+    # Sum all input tokens (uncached + cache_read) from first result
+    UNCACHED=$(echo "$ENTRY" | jq '.results[0].uncached_input_tokens // 0')
+    CACHE_READ=$(echo "$ENTRY" | jq '.results[0].cache_read_input_tokens // 0')
+    INPUT=$((UNCACHED + CACHE_READ))
+    
+    OUTPUT=$(echo "$ENTRY" | jq '.results[0].output_tokens // 0')
     TOTAL=$((INPUT + OUTPUT))
     
     # Only save if we have data
@@ -83,7 +86,8 @@ while true; do
   "sessions": [
     {
       "key": "backfilled",
-      "inputTokens": $INPUT,
+      "uncachedInputTokens": $UNCACHED,
+      "cacheReadInputTokens": $CACHE_READ,
       "outputTokens": $OUTPUT,
       "totalTokens": $TOTAL
     }
@@ -96,7 +100,7 @@ EOF
         TOTAL_SAVED=$((TOTAL_SAVED + 1))
       fi
     fi
-  done <<< "$DATES"
+  done
   
   # Check for next page
   PAGE_TOKEN=$(echo "$RESPONSE" | jq -r '.next_page // ""')
