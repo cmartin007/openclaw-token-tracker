@@ -23,7 +23,7 @@ fi
 
 echo "✅ Admin key retrieved securely"
 echo ""
-echo "📊 Fetching all historical usage from Anthropic API..."
+echo "📊 Fetching all historical usage from Anthropic API (grouped by model)..."
 
 # Backfill from Jan 1, 2025 to today
 START_DATE="2025-01-01T00:00:00Z"
@@ -33,8 +33,8 @@ PAGE_TOKEN=""
 TOTAL_SAVED=0
 
 while true; do
-  # Build query
-  QUERY="https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${START_DATE}&ending_at=${END_DATE}&bucket_width=1d&limit=31"
+  # Build query with model grouping
+  QUERY="https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${START_DATE}&ending_at=${END_DATE}&bucket_width=1d&group_by[]=model&limit=31"
   
   if [[ -n "$PAGE_TOKEN" ]]; then
     QUERY="${QUERY}&page=${PAGE_TOKEN}"
@@ -54,51 +54,30 @@ while true; do
     exit 1
   fi
   
-  # Parse data for this page - select only entries with results
-  echo "$RESPONSE" | jq -c '.data[] | select(.results | length > 0)' 2>/dev/null | while read -r ENTRY; do
+  # Parse data for this page - store all results per day
+  echo "$RESPONSE" | jq -c '.data[]' 2>/dev/null | while read -r ENTRY; do
     [[ -z "$ENTRY" ]] && continue
     
     TIMESTAMP=$(echo "$ENTRY" | jq -r '.starting_at')
     DATE="${TIMESTAMP%T*}"
+    HISTORY_FILE="$HISTORY_DIR/${DATE}.json"
     
-    # Sum all input tokens (uncached + cache_read) from first result
-    UNCACHED=$(echo "$ENTRY" | jq '.results[0].uncached_input_tokens // 0')
-    CACHE_READ=$(echo "$ENTRY" | jq '.results[0].cache_read_input_tokens // 0')
-    INPUT=$((UNCACHED + CACHE_READ))
+    RESULTS=$(echo "$ENTRY" | jq '.results' 2>/dev/null)
     
-    OUTPUT=$(echo "$ENTRY" | jq '.results[0].output_tokens // 0')
-    TOTAL=$((INPUT + OUTPUT))
-    
-    # Only save if we have data
-    if [[ $TOTAL -gt 0 ]]; then
-      HISTORY_FILE="$HISTORY_DIR/${DATE}.json"
-      
-      # Don't overwrite if already exists (preserve local tracking)
-      if [[ ! -f "$HISTORY_FILE" ]]; then
-        SNAPSHOT=$(cat <<EOF
+    # Only save if there are results
+    if echo "$RESULTS" | jq -e 'length > 0' > /dev/null 2>&1; then
+      # Create or overwrite with all model data for this day
+      SNAPSHOT=$(cat <<EOF
 {
   "timestamp": "${TIMESTAMP}",
   "date": "$DATE",
-  "model": "claude-haiku-4-5",
-  "inputTokens": $INPUT,
-  "outputTokens": $OUTPUT,
-  "totalTokens": $TOTAL,
-  "sessions": [
-    {
-      "key": "backfilled",
-      "uncachedInputTokens": $UNCACHED,
-      "cacheReadInputTokens": $CACHE_READ,
-      "outputTokens": $OUTPUT,
-      "totalTokens": $TOTAL
-    }
-  ]
+  "results": $RESULTS
 }
 EOF
 )
-        
-        echo "$SNAPSHOT" | jq '.' > "$HISTORY_FILE"
-        TOTAL_SAVED=$((TOTAL_SAVED + 1))
-      fi
+      
+      echo "$SNAPSHOT" | jq '.' > "$HISTORY_FILE"
+      TOTAL_SAVED=$((TOTAL_SAVED + 1))
     fi
   done
   
