@@ -1,7 +1,7 @@
 #!/bin/bash
 # backfill-token-history.sh - Backfill token/cost usage from Anthropic Admin API
+# Dual query: get costs by usage_type AND tokens by model
 # Uses pass (password-store) for secure admin API key retrieval
-# Stores actual costs from API (input_no_cache, input_cache_read, input_cache_write_5m, output)
 
 set -e
 
@@ -24,7 +24,7 @@ fi
 
 echo "✅ Admin key retrieved securely"
 echo ""
-echo "📊 Fetching all historical usage from Anthropic API (cost breakdown)..."
+echo "📊 Fetching all historical usage from Anthropic API (dual query)..."
 
 # Backfill from Jan 1, 2025 to today
 START_DATE="2025-01-01T00:00:00Z"
@@ -34,45 +34,57 @@ PAGE_TOKEN=""
 TOTAL_SAVED=0
 
 while true; do
-  # Build query - group by model and usage type to get costs
-  QUERY="https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${START_DATE}&ending_at=${END_DATE}&bucket_width=1d&group_by[]=model&group_by[]=usage_type&limit=31"
+  # Query 1: Group by model + usage_type for COSTS
+  QUERY_COSTS="https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${START_DATE}&ending_at=${END_DATE}&bucket_width=1d&group_by[]=model&group_by[]=usage_type&limit=31"
+  
+  # Query 2: Group by model only for TOKENS
+  QUERY_TOKENS="https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${START_DATE}&ending_at=${END_DATE}&bucket_width=1d&group_by[]=model&limit=31"
   
   if [[ -n "$PAGE_TOKEN" ]]; then
-    QUERY="${QUERY}&page=${PAGE_TOKEN}"
+    QUERY_COSTS="${QUERY_COSTS}&page=${PAGE_TOKEN}"
+    QUERY_TOKENS="${QUERY_TOKENS}&page=${PAGE_TOKEN}"
   fi
   
-  echo "  Fetching page..." >&2
+  echo "  Fetching page (costs + tokens)..." >&2
   
-  # Fetch data
-  RESPONSE=$(curl -s "$QUERY" \
+  # Fetch both
+  RESPONSE_COSTS=$(curl -s "$QUERY_COSTS" \
+    -H "x-api-key: $ADMIN_KEY" \
+    -H "anthropic-version: 2023-06-01")
+  
+  RESPONSE_TOKENS=$(curl -s "$QUERY_TOKENS" \
     -H "x-api-key: $ADMIN_KEY" \
     -H "anthropic-version: 2023-06-01")
   
   # Check for errors
-  if echo "$RESPONSE" | jq -e '.error' > /dev/null 2>&1; then
-    ERROR=$(echo "$RESPONSE" | jq -r '.error.message // "Unknown error"')
+  if echo "$RESPONSE_COSTS" | jq -e '.error' > /dev/null 2>&1; then
+    ERROR=$(echo "$RESPONSE_COSTS" | jq -r '.error.message // "Unknown error"')
     echo "❌ API Error: $ERROR"
     exit 1
   fi
   
-  # Parse data for this page - store all cost data per day
-  echo "$RESPONSE" | jq -c '.data[]' 2>/dev/null | while read -r ENTRY; do
+  # Merge and store data
+  echo "$RESPONSE_COSTS" | jq -c '.data[]' 2>/dev/null | while read -r ENTRY; do
     [[ -z "$ENTRY" ]] && continue
     
     TIMESTAMP=$(echo "$ENTRY" | jq -r '.starting_at')
     DATE="${TIMESTAMP%T*}"
     HISTORY_FILE="$HISTORY_DIR/${DATE}.json"
     
-    RESULTS=$(echo "$ENTRY" | jq '.results' 2>/dev/null)
+    # Extract cost results (by usage_type)
+    COST_RESULTS=$(echo "$ENTRY" | jq '.results')
     
-    # Only save if there are results
-    if echo "$RESULTS" | jq -e 'length > 0' > /dev/null 2>&1; then
-      # Create or overwrite with all cost data for this day
+    # Now get token results for this date from RESPONSE_TOKENS
+    TOKEN_RESULTS=$(echo "$RESPONSE_TOKENS" | jq ".data[] | select(.starting_at == \"$TIMESTAMP\") | .results")
+    
+    if echo "$COST_RESULTS" | jq -e 'length > 0' > /dev/null 2>&1; then
+      # Create snapshot with both costs and tokens
       SNAPSHOT=$(cat <<EOF
 {
   "timestamp": "${TIMESTAMP}",
   "date": "$DATE",
-  "results": $RESULTS
+  "costs": $COST_RESULTS,
+  "tokens": $TOKEN_RESULTS
 }
 EOF
 )
@@ -83,7 +95,7 @@ EOF
   done
   
   # Check for next page
-  PAGE_TOKEN=$(echo "$RESPONSE" | jq -r '.next_page // ""')
+  PAGE_TOKEN=$(echo "$RESPONSE_COSTS" | jq -r '.next_page // ""')
   
   if [[ -z "$PAGE_TOKEN" ]]; then
     break
