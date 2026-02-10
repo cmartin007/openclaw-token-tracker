@@ -1,9 +1,17 @@
 #!/bin/bash
-# tokens-command.sh - Show cost + token breakdown by model
+# tokens-command.sh - Show cost + token breakdown by model with caching info
+
+set -e
 
 TOKEN_HISTORY_DIR="/home/openclaw/.openclaw/workspace/token-history"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PRICING_FILE="${PRICING_FILE:-$SCRIPT_DIR/pricing.json}"
 
-# Function to format numbers
+if [[ ! -f "$PRICING_FILE" ]]; then
+  echo "❌ Error: Pricing file not found: $PRICING_FILE"
+  exit 1
+fi
+
 format_num() {
   local num=$1
   if (( $(echo "$num >= 1000000" | bc -l) )); then
@@ -15,7 +23,6 @@ format_num() {
   fi
 }
 
-# Function to show breakdown for a time period
 show_period_breakdown() {
   local period_name=$1
   local num_days=$2
@@ -23,101 +30,136 @@ show_period_breakdown() {
   echo "**$period_name**"
   echo ""
   
-  # Collect all unique models from period
-  MODELS=$(for i in $(seq 0 $((num_days - 1))); do
-    date_file="$TOKEN_HISTORY_DIR/$(date -u -d "-$i days" +%Y-%m-%d).json" 2>/dev/null
-    [[ -f "$date_file" ]] && jq -r '.tokens[]?.model // empty' "$date_file" 2>/dev/null
-  done | sort -u)
-  
-  PERIOD_TOTAL_COST=0
-  PERIOD_TOTAL_TOKENS=0
-  
-  for MODEL in $MODELS; do
-    [[ -z "$MODEL" ]] && continue
+  # Collect all JSON files in the period (as array for proper expansion)
+  local -a json_files_array
+  for i in $(seq 0 $((num_days - 1))); do
+    local date_str=$(date -u -d "-$i days" +%Y-%m-%d 2>/dev/null || date -u -v-${i}d +%Y-%m-%d)
+    local date_file="$TOKEN_HISTORY_DIR/$date_str.json"
     
-    # Format model name
-    MODEL_SHORT=$(echo "$MODEL" | sed 's/Claude //; s/ 4\.[0-9]*//; s/.*\(Haiku\|Sonnet\|Opus\).*/\1/')
-    
-    # Sum costs by usage type + collect token counts
-    NO_CACHE_COST=0
-    CACHE_READ_COST=0
-    CACHE_WRITE_COST=0
-    OUTPUT_COST=0
-    MODEL_TOKENS=0
-    
-    for i in $(seq 0 $((num_days - 1))); do
-      date_file="$TOKEN_HISTORY_DIR/$(date -u -d "-$i days" +%Y-%m-%d).json" 2>/dev/null
-      if [[ -f "$date_file" ]]; then
-        # Get costs by usage type
-        COSTS=$(jq ".costs[] | select(.model == \"$MODEL\") | {usage_type, cost_usd}" "$date_file" 2>/dev/null)
-        while read -r line; do
-          [[ -z "$line" ]] && continue
-          USAGE_TYPE=$(echo "$line" | jq -r '.usage_type')
-          COST=$(echo "$line" | jq '.cost_usd')
-          
-          case "$USAGE_TYPE" in
-            input_no_cache)
-              NO_CACHE_COST=$(echo "$NO_CACHE_COST + $COST" | bc)
-              ;;
-            input_cache_read)
-              CACHE_READ_COST=$(echo "$CACHE_READ_COST + $COST" | bc)
-              ;;
-            input_cache_write*)
-              CACHE_WRITE_COST=$(echo "$CACHE_WRITE_COST + $COST" | bc)
-              ;;
-            output)
-              OUTPUT_COST=$(echo "$OUTPUT_COST + $COST" | bc)
-              ;;
-          esac
-        done < <(echo "$COSTS" | jq -c '.')
-        
-        # Get token counts
-        TOKENS=$(jq ".tokens[] | select(.model == \"$MODEL\") | .uncached_input_tokens + .cache_read_input_tokens + .output_tokens" "$date_file" 2>/dev/null)
-        while read -r line; do
-          [[ -z "$line" ]] && continue
-          MODEL_TOKENS=$(echo "$MODEL_TOKENS + $line" | bc)
-        done < <(echo "$TOKENS")
-      fi
-    done
-    
-    TOTAL_COST=$(echo "$NO_CACHE_COST + $CACHE_READ_COST + $CACHE_WRITE_COST + $OUTPUT_COST" | bc)
-    
-    if (( $(echo "$TOTAL_COST > 0 || $MODEL_TOKENS > 0" | bc -l) )); then
-      PERIOD_TOTAL_COST=$(echo "$PERIOD_TOTAL_COST + $TOTAL_COST" | bc)
-      PERIOD_TOTAL_TOKENS=$((PERIOD_TOTAL_TOKENS + MODEL_TOKENS))
-      
-      echo "   **$MODEL_SHORT** | $(format_num $MODEL_TOKENS) tokens | **\$$(printf "%.2f" "$TOTAL_COST")**"
-      if (( $(echo "$NO_CACHE_COST > 0" | bc -l) )); then
-        echo "      📥 Input (no cache): \$$(printf "%.2f" "$NO_CACHE_COST")"
-      fi
-      if (( $(echo "$CACHE_READ_COST > 0" | bc -l) )); then
-        echo "      💾 Input (cache read): \$$(printf "%.2f" "$CACHE_READ_COST")"
-      fi
-      if (( $(echo "$CACHE_WRITE_COST > 0" | bc -l) )); then
-        echo "      📝 Input (cache write): \$$(printf "%.2f" "$CACHE_WRITE_COST")"
-      fi
-      if (( $(echo "$OUTPUT_COST > 0" | bc -l) )); then
-        echo "      📤 Output: \$$(printf "%.2f" "$OUTPUT_COST")"
-      fi
-      echo ""
+    if [[ -f "$date_file" ]]; then
+      json_files_array+=("$date_file")
     fi
   done
   
-  echo "   **SUBTOTAL: $(format_num $PERIOD_TOTAL_TOKENS) tokens | \$$(printf "%.2f" "$PERIOD_TOTAL_COST")**"
+  if [[ ${#json_files_array[@]} -eq 0 ]]; then
+    echo "   *No data available*"
+    echo ""
+    return
+  fi
+  
+  # Create temp files for tracking totals
+  local tmp_data=$(mktemp)
+  local tmp_costs=$(mktemp)
+  local tmp_tokens=$(mktemp)
+  local tmp_savings=$(mktemp)
+  
+  # Extract and aggregate data by model (use -c for compact output, one JSON per line)
+  jq -c -s '
+    [.[] | .results[]?] |
+    group_by(.model) |
+    map({
+      model: .[0].model,
+      uncached_input: (map(.uncached_input_tokens // 0) | add),
+      cache_5m: (map(.cache_creation.ephemeral_5m_input_tokens // 0) | add),
+      cache_1h: (map(.cache_creation.ephemeral_1h_input_tokens // 0) | add),
+      cache_read: (map(.cache_read_input_tokens // 0) | add),
+      output: (map(.output_tokens // 0) | add)
+    }) |
+    sort_by((.uncached_input + .cache_5m + .cache_1h + .cache_read + .output)) | reverse | .[]
+  ' "${json_files_array[@]}" 2>/dev/null > "$tmp_data"
+  
+  # Process each model
+  while read -r line; do
+    model=$(echo "$line" | jq -r '.model')
+    uncached=$(echo "$line" | jq '.uncached_input')
+    cache_5m=$(echo "$line" | jq '.cache_5m')
+    cache_1h=$(echo "$line" | jq '.cache_1h')
+    cache_read=$(echo "$line" | jq '.cache_read')
+    output=$(echo "$line" | jq '.output')
+    
+    [[ -z "$model" || "$model" == "null" ]] && continue
+    
+    # Get pricing
+    base_model=$(echo "$model" | sed 's/-[0-9]\{8\}$//')
+    input_price=$(jq -r ".models.\"$base_model\".input_cost_per_token // \"\"" "$PRICING_FILE" 2>/dev/null)
+    output_price=$(jq -r ".models.\"$base_model\".output_cost_per_token // \"\"" "$PRICING_FILE" 2>/dev/null)
+    
+    if [[ -z "$input_price" ]]; then
+      continue
+    fi
+    
+    # Calculate costs
+    uncached_cost=$(echo "scale=6; $uncached * $input_price" | bc)
+    cache_5m_cost=$(echo "scale=6; $cache_5m * $input_price * 1.25" | bc)
+    cache_1h_cost=$(echo "scale=6; $cache_1h * $input_price * 2.0" | bc)
+    cache_read_cost=$(echo "scale=6; $cache_read * $input_price * 0.1" | bc)
+    output_cost=$(echo "scale=6; $output * $output_price" | bc)
+    
+    actual_cost=$(echo "scale=6; $uncached_cost + $cache_5m_cost + $cache_1h_cost + $cache_read_cost + $output_cost" | bc)
+    
+    # Cost without caching (all input at base rate)
+    total_input=$((uncached + cache_5m + cache_1h + cache_read))
+    no_cache_cost=$(echo "scale=6; $total_input * $input_price + $output_cost" | bc)
+    savings=$(echo "scale=6; $no_cache_cost - $actual_cost" | bc)
+    
+    total_tokens=$((uncached + cache_5m + cache_1h + cache_read + output))
+    
+    # Extract model family
+    short_name=$(echo "$model" | grep -oE "haiku|sonnet|opus" | head -1 | sed 's/.*/\u&/')
+    
+    # Output line: show actual cost only
+    printf "   %-10s  %12s tokens  $%.2f\n" "$short_name" "$(format_num $total_tokens)" "$actual_cost"
+    printf "   %-10s  %s\n" "" "$model"
+    
+    # Show INPUT vs OUTPUT clearly with cache breakdown
+    total_input=$((uncached + cache_5m + cache_1h + cache_read))
+    printf "      INPUT: %s [%s cached↓90%% | %s write | %s raw]  OUTPUT: %s\n" \
+      "$(format_num $total_input)" "$(format_num $cache_read)" "$(format_num $((cache_5m + cache_1h)))" "$(format_num $uncached)" "$(format_num $output)"
+    echo ""
+    
+    # Store for totals
+    echo "$actual_cost" >> "$tmp_costs"
+    echo "$total_tokens" >> "$tmp_tokens"
+    echo "$savings" >> "$tmp_savings"
+    
+  done < "$tmp_data"
+  
+  # Print totals
+  if [[ -s "$tmp_costs" ]]; then
+    total_cost=$(awk '{s+=$1} END {printf "%.2f", s}' "$tmp_costs")
+    total_tokens=$(awk '{s+=$1} END {print s}' "$tmp_tokens")
+    
+    if (( $(echo "$total_cost > 0" | bc -l) )); then
+      printf "   %-10s  %12s tokens  $%.2f\n" "TOTAL" "$(format_num $total_tokens)" "$total_cost"
+    fi
+  fi
+  
+  rm -f "$tmp_data" "$tmp_costs" "$tmp_tokens" "$tmp_savings"
+  
   echo ""
 }
 
-echo "💰 **Cost & Token Breakdown by Model**"
+echo "💰 **Token Usage & Cost Breakdown**"
 echo ""
 
-# Last 7 days
-show_period_breakdown "📅 Last 7 Days" 7
+show_period_breakdown "📅 Last 7 Days (rolling)" 7
 
-# This month (Feb 1 - today)
-MONTH_START=$(date -u +%Y)-02-01
+# Current month: from 1st of current month to today
+MONTH_START=$(date -u +%Y-%m-01)
 TODAY=$(date -u +%Y-%m-%d)
-DAYS_IN_MONTH=$(( ($(date -u -d "$TODAY" +%s) - $(date -u -d "$MONTH_START" +%s)) / 86400 + 1 ))
-show_period_breakdown "📅 This Month (Feb)" $DAYS_IN_MONTH
+DAYS_IN_MONTH=$(( ($(date -u -d "$TODAY" +%s 2>/dev/null || date -u -j -f %Y-%m-%d "$TODAY" +%s) - $(date -u -d "$MONTH_START" +%s 2>/dev/null || date -u -j -f %Y-%m-%d "$MONTH_START" +%s)) / 86400 + 1 ))
+MONTH_NAME=$(date -u -d "$MONTH_START" +%B 2>/dev/null || date -u -j -f %Y-%m-%d "$MONTH_START" +%B)
+show_period_breakdown "📅 Current Month ($MONTH_NAME 1-today)" $DAYS_IN_MONTH
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "📁 History: $TOKEN_HISTORY_DIR"
+echo "📁 Data: $TOKEN_HISTORY_DIR"
+echo ""
+echo "**Column meanings:**"
+echo "  • **Model name & version:** Which Claude model was used"
+echo "  • **Tokens:** Total input + output tokens"
+echo "  • **Cost:** What you actually paid (includes all pricing modifiers: caching, cache creation, output)"
+echo ""
+echo "**Token breakdown (INPUT | OUTPUT):**"
+echo "  • cached↓90%: Cache read tokens (90% discount applied)"
+echo "  • write: Cache creation tokens (1.25x-2.0x overhead to create cache)"
+echo "  • raw: Uncached input tokens (full base price)"

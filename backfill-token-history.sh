@@ -32,9 +32,10 @@ fi
 echo "🔓 Admin key retrieved"
 echo "📊 Starting backfill..."
 
-# Backfill from Jan 1, 2025 to today
+# Backfill from Jan 1, 2025 to today (add 1 day to end for inclusive range)
 START_DATE="2025-01-01T00:00:00Z"
-END_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+TOMORROW=$(date -u -d "+1 day" +"%Y-%m-%dT00:00:00Z" 2>/dev/null || date -u -v+1d +"%Y-%m-%dT00:00:00Z")
+END_DATE="$TOMORROW"
 
 PAGE_TOKEN=""
 TOTAL_SAVED=0
@@ -59,7 +60,7 @@ handle_api_error() {
 }
 
 while true; do
-  QUERY_COSTS="https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${START_DATE}&ending_at=${END_DATE}&bucket_width=1d&group_by[]=model&group_by[]=usage_type&limit=31"
+  QUERY_COSTS="https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${START_DATE}&ending_at=${END_DATE}&bucket_width=1d&group_by[]=model&limit=31"
   QUERY_TOKENS="https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${START_DATE}&ending_at=${END_DATE}&bucket_width=1d&group_by[]=model&limit=31"
   
   if [[ -n "$PAGE_TOKEN" ]]; then
@@ -69,47 +70,34 @@ while true; do
   
   echo "  Fetching page..." >&2
   
-  # Fetch with retry logic
-  RESPONSE_COSTS=$(curl -s "$QUERY_COSTS" \
+  # Fetch data from Anthropic API
+  RESPONSE=$(curl -s "$QUERY_COSTS" \
     -H "x-api-key: $ADMIN_KEY" \
     -H "anthropic-version: 2023-06-01")
   
-  # Check for rate limit or quota errors immediately
-  if echo "$RESPONSE_COSTS" | jq -e '.error' > /dev/null 2>&1; then
-    ERROR=$(echo "$RESPONSE_COSTS" | jq -r '.error.message // "Unknown error"')
-    handle_api_error "$ERROR"
-  fi
-  
-  # Small delay between requests (rate limit friendly)
-  sleep 0.5
-  
-  RESPONSE_TOKENS=$(curl -s "$QUERY_TOKENS" \
-    -H "x-api-key: $ADMIN_KEY" \
-    -H "anthropic-version: 2023-06-01")
-  
-  if echo "$RESPONSE_TOKENS" | jq -e '.error' > /dev/null 2>&1; then
-    ERROR=$(echo "$RESPONSE_TOKENS" | jq -r '.error.message // "Unknown error"')
+  # Check for errors
+  if echo "$RESPONSE" | jq -e '.error' > /dev/null 2>&1; then
+    ERROR=$(echo "$RESPONSE" | jq -r '.error.message // "Unknown error"')
     handle_api_error "$ERROR"
   fi
   
   # Process results
-  echo "$RESPONSE_COSTS" | jq -c '.data[]' 2>/dev/null | while read -r ENTRY; do
+  echo "$RESPONSE" | jq -c '.data[]' 2>/dev/null | while read -r ENTRY; do
     [[ -z "$ENTRY" ]] && continue
     
     TIMESTAMP=$(echo "$ENTRY" | jq -r '.starting_at')
     DATE="${TIMESTAMP%T*}"
     HISTORY_FILE="$HISTORY_DIR/${DATE}.json"
     
-    COST_RESULTS=$(echo "$ENTRY" | jq '.results')
-    TOKEN_RESULTS=$(echo "$RESPONSE_TOKENS" | jq ".data[] | select(.starting_at == \"$TIMESTAMP\") | .results")
+    # Extract results from API response (includes costs + tokens)
+    RESULTS=$(echo "$ENTRY" | jq '.results')
     
-    if echo "$COST_RESULTS" | jq -e 'length > 0' > /dev/null 2>&1; then
+    if echo "$RESULTS" | jq -e 'length > 0' > /dev/null 2>&1; then
       SNAPSHOT=$(cat <<EOF
 {
   "timestamp": "${TIMESTAMP}",
   "date": "$DATE",
-  "costs": $COST_RESULTS,
-  "tokens": $TOKEN_RESULTS
+  "results": $RESULTS
 }
 EOF
 )
@@ -120,7 +108,7 @@ EOF
   done
   
   # Get next page token
-  PAGE_TOKEN=$(echo "$RESPONSE_COSTS" | jq -r '.next_page // ""')
+  PAGE_TOKEN=$(echo "$RESPONSE" | jq -r '.next_page // ""')
   
   if [[ -z "$PAGE_TOKEN" ]]; then
     break
