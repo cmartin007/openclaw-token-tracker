@@ -32,14 +32,20 @@ format_num() {
 if [[ -n "$MINIMAX_API_KEY" ]]; then
   echo "💳 **MiniMax Coding Plan**"
   echo ""
-  PLAN_RESPONSE=$(curl -s --location 'https://www.minimax.io/v1/api/openplatform/coding_plan/remains' \
+  PLAN_RESPONSE=$(curl -s --location 'https://platform.minimax.io/v1/api/openplatform/coding_plan/remains' \
     --header "Authorization: Bearer $MINIMAX_API_KEY" \
     --header 'Content-Type: application/json' 2>/dev/null)
   
-  if echo "$PLAN_RESPONSE" | jq -e '.code == 0' >/dev/null 2>&1; then
-    REMAINS=$(echo "$PLAN_RESPONSE" | jq -r '.data. remains')
-    TOTAL=$(echo "$PLAN_RESPONSE" | jq -r '.data.total')
-    echo "   Remaining: $REMAINS / $TOTAL credits"
+  # Check if response is HTML (Cloudflare block) vs JSON
+  if echo "$PLAN_RESPONSE" | grep -q "<!DOCTYPE html"; then
+    echo "   ⚠️  API blocked by Cloudflare (server IP restricted)"
+    echo "   Run locally or check via https://platform.minimax.io"
+  elif echo "$PLAN_RESPONSE" | jq -e '.base_resp.status_code == 0' >/dev/null 2>&1; then
+    TOTAL=$(echo "$PLAN_RESPONSE" | jq -r '.model_remains[0].current_interval_total_count')
+    USAGE=$(echo "$PLAN_RESPONSE" | jq -r '.model_remains[0].current_interval_usage_count')
+    REMAINS=$((TOTAL - USAGE))
+    echo "   Remaining: $REMAINS / $TOTAL prompts"
+    echo "   Used: $USAGE ($((USAGE * 100 / TOTAL))%)"
   else
     ERROR_MSG=$(echo "$PLAN_RESPONSE" | jq -r '.msg // .message // "Unknown error"' 2>/dev/null)
     echo "   ❌ Error checking plan: $ERROR_MSG"
