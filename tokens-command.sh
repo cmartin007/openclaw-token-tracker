@@ -7,6 +7,11 @@ TOKEN_HISTORY_DIR="/home/openclaw/.openclaw/workspace/token-history"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PRICING_FILE="${PRICING_FILE:-$SCRIPT_DIR/pricing.json}"
 
+# Load .env file if it exists
+if [[ -f "$SCRIPT_DIR/.env" ]]; then
+  source "$SCRIPT_DIR/.env"
+fi
+
 if [[ ! -f "$PRICING_FILE" ]]; then
   echo "❌ Error: Pricing file not found: $PRICING_FILE"
   exit 1
@@ -22,6 +27,25 @@ format_num() {
     printf "%.0f" "$num"
   fi
 }
+
+# Check MiniMax coding plan balance (if API key available)
+if [[ -n "$MINIMAX_API_KEY" ]]; then
+  echo "💳 **MiniMax Coding Plan**"
+  echo ""
+  PLAN_RESPONSE=$(curl -s --location 'https://www.minimax.io/v1/api/openplatform/coding_plan/remains' \
+    --header "Authorization: Bearer $MINIMAX_API_KEY" \
+    --header 'Content-Type: application/json' 2>/dev/null)
+  
+  if echo "$PLAN_RESPONSE" | jq -e '.code == 0' >/dev/null 2>&1; then
+    REMAINS=$(echo "$PLAN_RESPONSE" | jq -r '.data. remains')
+    TOTAL=$(echo "$PLAN_RESPONSE" | jq -r '.data.total')
+    echo "   Remaining: $REMAINS / $TOTAL credits"
+  else
+    ERROR_MSG=$(echo "$PLAN_RESPONSE" | jq -r '.msg // .message // "Unknown error"' 2>/dev/null)
+    echo "   ❌ Error checking plan: $ERROR_MSG"
+  fi
+  echo ""
+fi
 
 show_period_breakdown() {
   local period_name=$1

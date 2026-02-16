@@ -1,0 +1,13 @@
+# Environment variables (contains API keys)
+.env
+.env.local
+
+# Token history data
+token-history/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
