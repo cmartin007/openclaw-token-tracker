@@ -105,9 +105,22 @@ show_period_breakdown() {
   local tmp_tokens=$(mktemp)
   local tmp_savings=$(mktemp)
   
-  # Extract and aggregate data by model (use -c for compact output, one JSON per line)
+  # Extract and aggregate data by model (supports two formats)
+  # Format 1: Anthropic API detailed (from backfill) - has .results[].uncached_input_tokens
+  # Format 2: Simple session format (from logger) - has .inputTokens, .outputTokens
+  # Use alternative operator to handle both in one query
+  
   jq -c -s '
-    [.[] | .results[]?] |
+    [.[] | 
+      # Try detailed format first, then simple format
+      (if .results and (.results | length) > 0 then 
+        .results[] 
+      elif .inputTokens then 
+        {model: (.model // "unknown"), uncached_input_tokens: 0, cache_creation: {ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0}, cache_read_input_tokens: (.inputTokens // 0), output_tokens: (.outputTokens // 0)}
+      else 
+        empty 
+      end)
+    ] |
     group_by(.model) |
     map({
       model: .[0].model,
