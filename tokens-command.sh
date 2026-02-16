@@ -32,7 +32,7 @@ format_num() {
 if [[ -n "$MINIMAX_API_KEY" ]]; then
   echo "💳 **MiniMax Coding Plan**"
   echo ""
-  PLAN_RESPONSE=$(curl -s --location 'https://platform.minimax.io/v1/api/openplatform/coding_plan/remains' \
+  PLAN_RESPONSE=$(curl -s --location 'https://platform.minimax.io/v1/api/openplatform/coding_plan/remains?GroupId=2023224439176434323' \
     --header "Authorization: Bearer $MINIMAX_API_KEY" \
     --header 'Content-Type: application/json' 2>/dev/null)
   
@@ -43,9 +43,31 @@ if [[ -n "$MINIMAX_API_KEY" ]]; then
   elif echo "$PLAN_RESPONSE" | jq -e '.base_resp.status_code == 0' >/dev/null 2>&1; then
     TOTAL=$(echo "$PLAN_RESPONSE" | jq -r '.model_remains[0].current_interval_total_count')
     USAGE=$(echo "$PLAN_RESPONSE" | jq -r '.model_remains[0].current_interval_usage_count')
+    START_TS=$(echo "$PLAN_RESPONSE" | jq -r '.model_remains[0].start_time')
+    END_TS=$(echo "$PLAN_RESPONSE" | jq -r '.model_remains[0].end_time')
+    REMAINS_TIME=$(echo "$PLAN_RESPONSE" | jq -r '.model_remains[0].remains_time')
+    
     REMAINS=$((TOTAL - USAGE))
-    echo "   Remaining: $REMAINS / $TOTAL prompts"
-    echo "   Used: $USAGE ($((USAGE * 100 / TOTAL))%)"
+    REMAINING_PCT=$(echo "scale=1; $REMAINS * 100 / $TOTAL" | bc)
+    
+    # Convert timestamps from milliseconds to readable format
+    START_SEC=$((START_TS / 1000))
+    END_SEC=$((END_TS / 1000))
+    START_TIME=$(date -u -d "@$START_SEC" +"%H:%M" 2>/dev/null || date -u -j -f %s "$START_SEC" +"%H:%M")
+    END_TIME=$(date -u -d "@$END_SEC" +"%H:%M" 2>/dev/null || date -u -j -f %s "$END_SEC" +"%H:%M")
+    
+    # Convert remains_time (ms) to hours/minutes
+    RESETS_SEC=$((REMAINS_TIME / 1000))
+    RESETS_H=$((RESETS_SEC / 3600))
+    RESETS_M=$(((RESETS_SEC % 3600) / 60))
+    if [[ $RESETS_H -gt 0 ]]; then
+      RESET_IN="${RESETS_H}h ${RESETS_M}m"
+    else
+      RESET_IN="${RESETS_M}m"
+    fi
+    
+    echo "   ⏰ ${START_TIME}-${END_TIME} UTC | Resets in ${RESET_IN}"
+    echo "   Remaining: $REMAINS / $TOTAL prompts ($REMAINING_PCT%)"
   else
     ERROR_MSG=$(echo "$PLAN_RESPONSE" | jq -r '.msg // .message // "Unknown error"' 2>/dev/null)
     echo "   ❌ Error checking plan: $ERROR_MSG"
