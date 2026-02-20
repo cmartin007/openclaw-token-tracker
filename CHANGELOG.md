@@ -1,5 +1,70 @@
 # Changelog
 
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+---
+
+## [1.3.0] - 2026-02-20
+
+### Added
+- **MiniMax Coding Plan Integration**
+  - API-based balance checking from MiniMax platform
+  - Display: usage percentage, time window (05:00-10:00 UTC), reset countdown
+  - Support for MiniMax M2.5 and M2.1 models
+  - Graceful degradation when API key not configured
+- **tokens-command.sh** - Telegram bot command handler for `/tokens`
+  - Current month only filter (no old data clutter)
+  - Detailed token breakdown: Uncached, Cache 5m, Cache Read, Output
+  - Model version display (Haiku 4.5, Opus 4.5, Sonnet 4, Sonnet 4.5)
+  - Cache-aware cost calculation with proper multipliers
+- **test-regressions.sh** - Regression test suite
+  - Validates weekly/monthly aggregation (no double-counting)
+  - Lock timeout behavior verification
+  - Backfill counter correctness
+  - Dependency guards and divide-by-zero handling
+
+### Changed
+- **tokens-command.sh**
+  - Fixed cost calculation: initialize `cost=""` per model iteration (prevents carry-over)
+  - Use `awk` instead of `bc` for better handling of large numbers
+  - MiniMax shows "included" (coding plan has no pay-per-use)
+  - Total now correctly sums individual model costs
+- **daily-token-counter.sh**
+  - Fixed weekly/monthly aggregation double-counting
+  - Fixed lock timeout behavior
+  - Fixed TOTAL_SAVED counter (process substitution fix)
+  - Added dependency checks for required commands
+  - Added divide-by-zero guard for MiniMax percentage
+- **pricing.json**
+  - Added minimax-M2.5 and minimax-M2.1 models
+  - Version bumped to v1.3.0
+- **Security**
+  - .env file for API keys (gitignored)
+  - .env.example for documentation
+  - GroupId and endpoint configurable
+
+### Fixed
+- Issue: Cost showing wrong ($77.79 instead of $80.10) - was using rough estimate instead of summing individual model costs
+- Issue: All models showing "included" - missing cost initialization per loop iteration
+- Issue: Haiku showing $0.78 instead of $18.75 - bc can't handle large numbers, switched to awk
+- Issue: Model versions not showing - added proper pattern matching for 4.5, 4, etc.
+- Issue: MiniMax percentage inverted - API returns remaining count, not used
+
+### Documentation
+- README.md updated with:
+  - Installation instructions for scripts
+  - Usage examples for /tokens command
+  - Cost estimate limitations (cache, long context, etc.)
+  - Cron scheduling examples
+  - Test regression instructions
+- LATEST_CHANGES_REVIEW.md - Comprehensive review of all changes
+- PRICING_EXTERNALIZATION.md - Detailed implementation notes
+
+---
+
 ## [1.2.0] - 2026-02-09
 
 ### Added
