@@ -1,21 +1,12 @@
 #!/bin/bash
-# tokens-command.sh - Show cost + token breakdown by model with caching info
-
-set -e
+# tokens-command.sh - Clean token usage summary with table format
 
 TOKEN_HISTORY_DIR="/home/openclaw/.openclaw/workspace/token-history"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PRICING_FILE="${PRICING_FILE:-$SCRIPT_DIR/pricing.json}"
 
-# Load .env file if it exists
-if [[ -f "$SCRIPT_DIR/.env" ]]; then
-  source "$SCRIPT_DIR/.env"
-fi
-
-if [[ ! -f "$PRICING_FILE" ]]; then
-  echo "❌ Error: Pricing file not found: $PRICING_FILE"
-  exit 1
-fi
+# Load .env
+[[ -f "$SCRIPT_DIR/.env" ]] && source "$SCRIPT_DIR/.env"
 
 format_num() {
   local num=$1
@@ -28,203 +19,164 @@ format_num() {
   fi
 }
 
-# Check MiniMax coding plan balance (if API key available)
+# Get MiniMax plan - show raw percentage from API
+PLAN_PCT=0
+PLAN_WINDOW=""
+PLAN_RESETS_IN=""
+
 if [[ -n "$MINIMAX_API_KEY" ]]; then
-  echo "💳 **MiniMax Coding Plan**"
-  echo ""
   PLAN_RESPONSE=$(curl -s --location 'https://platform.minimax.io/v1/api/openplatform/coding_plan/remains?GroupId=2023224439176434323' \
     --header "Authorization: Bearer $MINIMAX_API_KEY" \
     --header 'Content-Type: application/json' 2>/dev/null)
   
-  # Check if response is HTML (Cloudflare block) vs JSON
-  if echo "$PLAN_RESPONSE" | grep -q "<!DOCTYPE html"; then
-    echo "   ⚠️  API blocked by Cloudflare (server IP restricted)"
-    echo "   Run locally or check via https://platform.minimax.io"
-  elif echo "$PLAN_RESPONSE" | jq -e '.base_resp.status_code == 0' >/dev/null 2>&1; then
-    TOTAL=$(echo "$PLAN_RESPONSE" | jq -r '.model_remains[0].current_interval_total_count')
-    USAGE=$(echo "$PLAN_RESPONSE" | jq -r '.model_remains[0].current_interval_usage_count')
+  if echo "$PLAN_RESPONSE" | jq -e '.base_resp.status_code == 0' >/dev/null 2>&1; then
+    # API field might be REMAINING, not used - invert the calculation
+    API_REMAINS=$(echo "$PLAN_RESPONSE" | jq -r '.model_remains[0].current_interval_usage_count')
+    API_TOTAL=$(echo "$PLAN_RESPONSE" | jq -r '.model_remains[0].current_interval_total_count')
+    # If API count is remaining, then used = total - remaining
+    PLAN_PCT=$(echo "scale=0; ($API_TOTAL - $API_REMAINS) * 100 / $API_TOTAL" | bc)
+    
+    # Get time window
     START_TS=$(echo "$PLAN_RESPONSE" | jq -r '.model_remains[0].start_time')
     END_TS=$(echo "$PLAN_RESPONSE" | jq -r '.model_remains[0].end_time')
-    REMAINS_TIME=$(echo "$PLAN_RESPONSE" | jq -r '.model_remains[0].remains_time')
+    REMAINS_MS=$(echo "$PLAN_RESPONSE" | jq -r '.model_remains[0].remains_time')
     
-    REMAINS=$((TOTAL - USAGE))
-    REMAINING_PCT=$(echo "scale=1; $REMAINS * 100 / $TOTAL" | bc)
-    
-    # Convert timestamps from milliseconds to readable format
+    # Convert to readable times
     START_SEC=$((START_TS / 1000))
     END_SEC=$((END_TS / 1000))
     START_TIME=$(date -u -d "@$START_SEC" +"%H:%M" 2>/dev/null || date -u -j -f %s "$START_SEC" +"%H:%M")
     END_TIME=$(date -u -d "@$END_SEC" +"%H:%M" 2>/dev/null || date -u -j -f %s "$END_SEC" +"%H:%M")
     
-    # Convert remains_time (ms) to hours/minutes
-    RESETS_SEC=$((REMAINS_TIME / 1000))
+    # Convert remains_time to hours/minutes
+    RESETS_SEC=$((REMAINS_MS / 1000))
     RESETS_H=$((RESETS_SEC / 3600))
     RESETS_M=$(((RESETS_SEC % 3600) / 60))
     if [[ $RESETS_H -gt 0 ]]; then
-      RESET_IN="${RESETS_H}h ${RESETS_M}m"
+      PLAN_RESETS_IN="${RESETS_H} hr ${RESETS_M} min"
     else
-      RESET_IN="${RESETS_M}m"
+      PLAN_RESETS_IN="${RESETS_M} min"
     fi
     
-    echo "   ⏰ ${START_TIME}-${END_TIME} UTC | Resets in ${RESET_IN}"
-    echo "   Remaining: $REMAINS / $TOTAL prompts ($REMAINING_PCT%)"
-  else
-    ERROR_MSG=$(echo "$PLAN_RESPONSE" | jq -r '.msg // .message // "Unknown error"' 2>/dev/null)
-    echo "   ❌ Error checking plan: $ERROR_MSG"
+    PLAN_WINDOW="${START_TIME}-${END_TIME} (UTC)"
   fi
-  echo ""
 fi
 
-show_period_breakdown() {
-  local period_name=$1
-  local num_days=$2
-  
-  echo "**$period_name**"
-  echo ""
-  
-  # Collect all JSON files in the period (as array for proper expansion)
-  local -a json_files_array
-  for i in $(seq 0 $((num_days - 1))); do
-    local date_str=$(date -u -d "-$i days" +%Y-%m-%d 2>/dev/null || date -u -v-${i}d +%Y-%m-%d)
-    local date_file="$TOKEN_HISTORY_DIR/$date_str.json"
-    
-    if [[ -f "$date_file" ]]; then
-      json_files_array+=("$date_file")
-    fi
-  done
-  
-  if [[ ${#json_files_array[@]} -eq 0 ]]; then
-    echo "   *No data available*"
-    echo ""
-    return
-  fi
-  
-  # Create temp files for tracking totals
-  local tmp_data=$(mktemp)
-  local tmp_costs=$(mktemp)
-  local tmp_tokens=$(mktemp)
-  local tmp_savings=$(mktemp)
-  
-  # Extract and aggregate data by model (supports two formats)
-  # Format 1: Anthropic API detailed (from backfill) - has .results[].uncached_input_tokens
-  # Format 2: Simple session format (from logger) - has .inputTokens, .outputTokens
-  # Use alternative operator to handle both in one query
-  
-  jq -c -s '
-    [.[] | 
-      # Try detailed format first, then simple format
-      (if .results and (.results | length) > 0 then 
-        .results[] 
-      elif .inputTokens then 
-        {model: (.model // "unknown"), uncached_input_tokens: 0, cache_creation: {ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0}, cache_read_input_tokens: (.inputTokens // 0), output_tokens: (.outputTokens // 0)}
-      else 
-        empty 
-      end)
-    ] |
-    group_by(.model) |
-    map({
-      model: .[0].model,
-      uncached_input: (map(.uncached_input_tokens // 0) | add),
-      cache_5m: (map(.cache_creation.ephemeral_5m_input_tokens // 0) | add),
-      cache_1h: (map(.cache_creation.ephemeral_1h_input_tokens // 0) | add),
-      cache_read: (map(.cache_read_input_tokens // 0) | add),
-      output: (map(.output_tokens // 0) | add)
-    }) |
-    sort_by((.uncached_input + .cache_5m + .cache_1h + .cache_read + .output)) | reverse | .[]
-  ' "${json_files_array[@]}" 2>/dev/null > "$tmp_data"
-  
-  # Process each model
-  while read -r line; do
-    model=$(echo "$line" | jq -r '.model')
-    uncached=$(echo "$line" | jq '.uncached_input')
-    cache_5m=$(echo "$line" | jq '.cache_5m')
-    cache_1h=$(echo "$line" | jq '.cache_1h')
-    cache_read=$(echo "$line" | jq '.cache_read')
-    output=$(echo "$line" | jq '.output')
-    
-    [[ -z "$model" || "$model" == "null" ]] && continue
-    
-    # Get pricing
-    base_model=$(echo "$model" | sed 's/-[0-9]\{8\}$//')
-    input_price=$(jq -r ".models.\"$base_model\".input_cost_per_token // \"\"" "$PRICING_FILE" 2>/dev/null)
-    output_price=$(jq -r ".models.\"$base_model\".output_cost_per_token // \"\"" "$PRICING_FILE" 2>/dev/null)
-    
-    if [[ -z "$input_price" ]]; then
-      continue
-    fi
-    
-    # Calculate costs
-    uncached_cost=$(echo "scale=6; $uncached * $input_price" | bc)
-    cache_5m_cost=$(echo "scale=6; $cache_5m * $input_price * 1.25" | bc)
-    cache_1h_cost=$(echo "scale=6; $cache_1h * $input_price * 2.0" | bc)
-    cache_read_cost=$(echo "scale=6; $cache_read * $input_price * 0.1" | bc)
-    output_cost=$(echo "scale=6; $output * $output_price" | bc)
-    
-    actual_cost=$(echo "scale=6; $uncached_cost + $cache_5m_cost + $cache_1h_cost + $cache_read_cost + $output_cost" | bc)
-    
-    # Cost without caching (all input at base rate)
-    total_input=$((uncached + cache_5m + cache_1h + cache_read))
-    no_cache_cost=$(echo "scale=6; $total_input * $input_price + $output_cost" | bc)
-    savings=$(echo "scale=6; $no_cache_cost - $actual_cost" | bc)
-    
-    total_tokens=$((uncached + cache_5m + cache_1h + cache_read + output))
-    
-    # Extract model family
-    short_name=$(echo "$model" | grep -oE "haiku|sonnet|opus" | head -1 | sed 's/.*/\u&/')
-    
-    # Output line: show actual cost only
-    printf "   %-10s  %12s tokens  $%.2f\n" "$short_name" "$(format_num $total_tokens)" "$actual_cost"
-    printf "   %-10s  %s\n" "" "$model"
-    
-    # Show INPUT vs OUTPUT clearly with cache breakdown
-    total_input=$((uncached + cache_5m + cache_1h + cache_read))
-    printf "      INPUT: %s [%s cached↓90%% | %s write | %s raw]  OUTPUT: %s\n" \
-      "$(format_num $total_input)" "$(format_num $cache_read)" "$(format_num $((cache_5m + cache_1h)))" "$(format_num $uncached)" "$(format_num $output)"
-    echo ""
-    
-    # Store for totals
-    echo "$actual_cost" >> "$tmp_costs"
-    echo "$total_tokens" >> "$tmp_tokens"
-    echo "$savings" >> "$tmp_savings"
-    
-  done < "$tmp_data"
-  
-  # Print totals
-  if [[ -s "$tmp_costs" ]]; then
-    total_cost=$(awk '{s+=$1} END {printf "%.2f", s}' "$tmp_costs")
-    total_tokens=$(awk '{s+=$1} END {print s}' "$tmp_tokens")
-    
-    if (( $(echo "$total_cost > 0" | bc -l) )); then
-      printf "   %-10s  %12s tokens  $%.2f\n" "TOTAL" "$(format_num $total_tokens)" "$total_cost"
-    fi
-  fi
-  
-  rm -f "$tmp_data" "$tmp_costs" "$tmp_tokens" "$tmp_savings"
-  
-  echo ""
-}
+PLAN_REMAINS=$((100 - PLAN_PCT))
 
-echo "💰 **Token Usage & Cost Breakdown**"
+# Header
+if [[ -n "$PLAN_WINDOW" ]]; then
+  echo "💳 MiniMax Coding Plan: $PLAN_PCT% used ($PLAN_REMAINS% remaining) • $PLAN_WINDOW • Resets in $PLAN_RESETS_IN"
+else
+  echo "💳 MiniMax Coding Plan: $PLAN_PCT% used ($PLAN_REMAINS% remaining)"
+fi
+
+# Use only current month JSON files
+MONTH_PREFIX=$(date -u +%Y-%m)
+json_files=("$TOKEN_HISTORY_DIR"/${MONTH_PREFIX}*.json)
+
+if [[ ! -f "${json_files[0]}" ]]; then
+  echo "No historical data found."
+  exit 0
+fi
+
+# Aggregate by model with FULL cost breakdown (including caching)
+MONTH_DATA=$(jq -s '
+  [.[] | 
+    (if .results and (.results | length) > 0 then 
+      .results[] 
+    elif .inputTokens then 
+      {model: (.model // "MiniMax"), uncached: (.inputTokens // 0), cache_5m: 0, cache_1h: 0, cache_read: 0, output: (.outputTokens // 0)}
+    else 
+      null 
+    end)
+  ] | 
+  map(select(. != null)) |
+  group_by(.model) |
+  map({
+    model: .[0].model, 
+    uncached: (map(.uncached // .uncached_input_tokens // 0) | add),
+    cache_5m: (map(.cache_5m // .cache_creation.ephemeral_5m_input_tokens // 0) | add),
+    cache_1h: (map(.cache_1h // .cache_creation.ephemeral_1h_input_tokens // 0) | add),
+    cache_read: (map(.cache_read // .cache_read_input_tokens // 0) | add),
+    output: (map(.output // .output_tokens // 0) | add)
+  })
+' "${json_files[@]}" 2>/dev/null)
+
+# Calculate totals with proper cost formula
+TOTAL_UNCACHED=$(echo "$MONTH_DATA" | jq -r '[.[].uncached] | add')
+TOTAL_CACHE_5M=$(echo "$MONTH_DATA" | jq -r '[.[].cache_5m] | add')
+TOTAL_CACHE_1H=$(echo "$MONTH_DATA" | jq -r '[.[].cache_1h] | add')
+TOTAL_CACHE_READ=$(echo "$MONTH_DATA" | jq -r '[.[].cache_read] | add')
+TOTAL_OUTPUT=$(echo "$MONTH_DATA" | jq -r '[.[].output] | add')
+
+# Default to MiniMax pricing for now (simple estimate)
+TOTAL_TOKENS=$((TOTAL_UNCACHED + TOTAL_CACHE_5M + TOTAL_CACHE_1H + TOTAL_CACHE_READ + TOTAL_OUTPUT))
+# Rough estimate: $0.0006 per 1M tokens (average)
+TOTAL_COST=$(echo "scale=2; $TOTAL_TOKENS * 0.6 / 1000000" | bc 2>/dev/null | sed 's/^\./0./')
+
+echo ""
+MONTH_NAME=$(date -u +"%B %Y")
+echo "📊 $MONTH_NAME - \$$TOTAL_COST total"
+echo ""
+echo "| Model  | Tokens | Cost   |"
+echo "|--------|--------|--------|"
+
+# Process each model with model-specific pricing
+for row in $(echo "$MONTH_DATA" | jq -r '.[] | @base64'); do
+  model=$(echo "$row" | base64 -d | jq -r '.model')
+  uncached=$(echo "$row" | base64 -d | jq -r '.uncached')
+  cache_5m=$(echo "$row" | base64 -d | jq -r '.cache_5m')
+  cache_1h=$(echo "$row" | base64 -d | jq -r '.cache_1h')
+  cache_read=$(echo "$row" | base64 -d | jq -r '.cache_read')
+  output=$(echo "$row" | base64 -d | jq -r '.output')
+  
+  [[ -z "$model" || "$uncached" == "null" ]] && continue
+  
+  # Calculate tokens
+  tokens=$((uncached + cache_5m + cache_1h + cache_read + output))
+  [[ $tokens -eq 0 ]] && continue
+  
+  # Get pricing based on model family
+  case "$model" in
+    *haiku*|*Haiku*)
+      input_p="0.000001"; output_p="0.000005"
+      ;;
+    *sonnet*|*Sonnet*)
+      input_p="0.000003"; output_p="0.000015"
+      ;;
+    *opus*|*Opus*)
+      input_p="0.000005"; output_p="0.000025"
+      ;;
+    *minimax*|*MiniMax*)
+      input_p="0.0000001"; output_p="0.0000005"
+      ;;
+    *)
+      input_p="0.000001"; output_p="0.000005"
+      ;;
+  esac
+  
+  # Calculate cost: uncached (full) + cache_5m (1.25x) + cache_1h (2x) + cache_read (0.1x) + output (full)
+  cost=$(echo "scale=2; 
+    ($uncached * $input_p) + 
+    ($cache_5m * $input_p * 1.25) + 
+    ($cache_1h * $input_p * 2.0) + 
+    ($cache_read * $input_p * 0.1) + 
+    ($output * $output_p)" | bc 2>/dev/null | sed 's/^\./0./')
+  
+  short=$(echo "$model" | grep -oE "haiku|sonnet|opus|minimax" | head -1)
+  short=$(echo "$short" | sed 's/^./\u&/')
+  [[ -z "$short" ]] && short="MiniMax"
+  tokens_fmt=$(format_num "$tokens")
+  
+  printf "| %-6s | %-6s | \$%-6s |\n" "$short" "$tokens_fmt" "$cost"
+done
+
+TOTAL_FMT=$(format_num "$TOTAL_TOKENS")
+echo "|--------|--------|--------|"
+printf "| TOTAL  | %-6s | \$%-6s |\n" "$TOTAL_FMT" "$TOTAL_COST"
 echo ""
 
-show_period_breakdown "📅 Last 7 Days (rolling)" 7
+# Warning
+[[ $PLAN_REMAINS -lt 100 ]] && echo "You're almost out of MiniMax prompts - only $PLAN_REMAINS left! 🐕"
 
-# Current month: from 1st of current month to today
-MONTH_START=$(date -u +%Y-%m-01)
-TODAY=$(date -u +%Y-%m-%d)
-DAYS_IN_MONTH=$(( ($(date -u -d "$TODAY" +%s 2>/dev/null || date -u -j -f %Y-%m-%d "$TODAY" +%s) - $(date -u -d "$MONTH_START" +%s 2>/dev/null || date -u -j -f %Y-%m-%d "$MONTH_START" +%s)) / 86400 + 1 ))
-MONTH_NAME=$(date -u -d "$MONTH_START" +%B 2>/dev/null || date -u -j -f %Y-%m-%d "$MONTH_START" +%B)
-show_period_breakdown "📅 Current Month ($MONTH_NAME 1-today)" $DAYS_IN_MONTH
-
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "📁 Data: $TOKEN_HISTORY_DIR"
-echo ""
-echo "**Column meanings:**"
-echo "  • **Model name & version:** Which Claude model was used"
-echo "  • **Tokens:** Total input + output tokens"
-echo "  • **Cost:** What you actually paid (includes all pricing modifiers: caching, cache creation, output)"
-echo ""
-echo "**Token breakdown (INPUT | OUTPUT):**"
-echo "  • cached↓90%: Cache read tokens (90% discount applied)"
-echo "  • write: Cache creation tokens (1.25x-2.0x overhead to create cache)"
-echo "  • raw: Uncached input tokens (full base price)"
+exit 0

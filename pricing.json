@@ -76,6 +76,18 @@
       "output_cost_per_token": 0.000075,
       "display_name": "Claude Opus 3 ($15.00/M in, $75.00/M out)",
       "notes": "DEPRECATED - Much more expensive than newer Opus models"
+    },
+    "minimax-M2.5": {
+      "input_cost_per_token": 0.0000001,
+      "output_cost_per_token": 0.0000005,
+      "display_name": "MiniMax M2.5 ($0.10/M in, $0.50/M out)",
+      "notes": "Current default model - extremely cost efficient"
+    },
+    "minimax-M2.1": {
+      "input_cost_per_token": 0.0000001,
+      "output_cost_per_token": 0.0000005,
+      "display_name": "MiniMax M2.1 ($0.10/M in, $0.50/M out)",
+      "notes": "Previous MiniMax model - same pricing as M2.5"
     }
   }
 }
