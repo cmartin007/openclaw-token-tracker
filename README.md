@@ -38,6 +38,17 @@ mkdir -p /home/openclaw/.openclaw/workspace/token-history
 /home/openclaw/.openclaw/workspace/daily-token-counter.sh
 ```
 
+### Regression Checks
+Run the lightweight regression suite after script edits:
+```bash
+./test-regressions.sh
+```
+It validates key safeguards for:
+- Weekly/monthly aggregation (no today double-counting)
+- Lock timeout behavior
+- Backfill counter correctness
+- Dependency guards and divide-by-zero handling in `/tokens`
+
 ### Telegram Bot Command
 Set up `/tokens` command in your OpenClaw bot to get instant reports:
 ```
@@ -202,6 +213,7 @@ openclaw-token-tracker/
 ├── token-history-logger.sh        # History snapshot logger
 ├── tokens-command.sh              # Telegram bot command handler
 ├── backfill-token-history.sh      # Historical data fetcher
+├── test-regressions.sh            # Regression checks for critical bugfixes
 ├── pricing.json                   # Model pricing configuration
 ├── PRICING.md                     # Pricing update guide
 ├── CACHE_PRICING.md               # Prompt caching pricing guide (NEW!)

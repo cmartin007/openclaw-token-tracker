@@ -37,7 +37,7 @@ acquire_lock() {
       echo $$ > "$LOCK_FILE/pid"
       return 0
     fi
-    sleep 0.5
+    sleep 1
     ((elapsed++))
   done
   
@@ -96,10 +96,12 @@ TODAY=$(date -u '+%Y-%m-%d')
 if date -d "1 day" &>/dev/null 2>&1; then
   # GNU date
   WEEK_AGO=$(date -u -d "6 days ago" '+%Y-%m-%d')
+  YESTERDAY=$(date -u -d "1 day ago" '+%Y-%m-%d')
   MONTH_START=$(date -u '+%Y-%m-01')  # First day of current month
 else
   # BSD date (macOS)
   WEEK_AGO=$(date -u -v-6d '+%Y-%m-%d')
+  YESTERDAY=$(date -u -v-1d '+%Y-%m-%d')
   MONTH_START=$(date -u -v1d '+%Y-%m-01')  # First day of current month
 fi
 
@@ -362,9 +364,9 @@ echo ""
 # WEEKLY (last 7 days from history + today's cumulative)
 SAVED_IFS="$IFS"
 IFS='|'
-read -r WEEK_INPUT WEEK_OUTPUT <<< "$(sum_history_tokens "$WEEK_AGO" "$TODAY")"
+read -r WEEK_INPUT WEEK_OUTPUT <<< "$(sum_history_tokens "$WEEK_AGO" "$YESTERDAY")"
 IFS="$SAVED_IFS"
-# Add today's cumulative data to weekly (not just live session)
+# Add today's cumulative data once (history up to yesterday + today's history/live)
 WEEK_INPUT=$((WEEK_INPUT + TODAY_INPUT))
 WEEK_OUTPUT=$((WEEK_OUTPUT + TODAY_OUTPUT))
 WEEK_TOKENS=$((WEEK_INPUT + WEEK_OUTPUT))
@@ -381,9 +383,9 @@ echo ""
 # MONTHLY (current month from history + today's cumulative)
 SAVED_IFS="$IFS"
 IFS='|'
-read -r MONTH_INPUT MONTH_OUTPUT <<< "$(sum_history_tokens "$MONTH_START" "$TODAY")"
+read -r MONTH_INPUT MONTH_OUTPUT <<< "$(sum_history_tokens "$MONTH_START" "$YESTERDAY")"
 IFS="$SAVED_IFS"
-# Add today's cumulative data to monthly (not just live session)
+# Add today's cumulative data once (history up to yesterday + today's history/live)
 MONTH_INPUT=$((MONTH_INPUT + TODAY_INPUT))
 MONTH_OUTPUT=$((MONTH_OUTPUT + TODAY_OUTPUT))
 MONTH_TOKENS=$((MONTH_INPUT + MONTH_OUTPUT))

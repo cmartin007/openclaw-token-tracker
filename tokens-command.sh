@@ -5,6 +5,14 @@ TOKEN_HISTORY_DIR="/home/openclaw/.openclaw/workspace/token-history"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PRICING_FILE="${PRICING_FILE:-$SCRIPT_DIR/pricing.json}"
 
+# Validate runtime dependencies up front
+for cmd in curl jq bc base64; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "❌ Error: Required command '$cmd' not found"
+    exit 1
+  fi
+done
+
 # Load .env
 [[ -f "$SCRIPT_DIR/.env" ]] && source "$SCRIPT_DIR/.env"
 
@@ -31,10 +39,16 @@ if [[ -n "$MINIMAX_API_KEY" ]]; then
   
   if echo "$PLAN_RESPONSE" | jq -e '.base_resp.status_code == 0' >/dev/null 2>&1; then
     # API field might be REMAINING, not used - invert the calculation
-    API_REMAINS=$(echo "$PLAN_RESPONSE" | jq -r '.model_remains[0].current_interval_usage_count')
-    API_TOTAL=$(echo "$PLAN_RESPONSE" | jq -r '.model_remains[0].current_interval_total_count')
-    # If API count is remaining, then used = total - remaining
-    PLAN_PCT=$(echo "scale=0; ($API_TOTAL - $API_REMAINS) * 100 / $API_TOTAL" | bc)
+    API_REMAINS=$(echo "$PLAN_RESPONSE" | jq -r '.model_remains[0].current_interval_usage_count // 0')
+    API_TOTAL=$(echo "$PLAN_RESPONSE" | jq -r '.model_remains[0].current_interval_total_count // 0')
+    if [[ "$API_REMAINS" =~ ^[0-9]+$ && "$API_TOTAL" =~ ^[0-9]+$ && "$API_TOTAL" -gt 0 ]]; then
+      USED_COUNT=$((API_TOTAL - API_REMAINS))
+      (( USED_COUNT < 0 )) && USED_COUNT=0
+      (( USED_COUNT > API_TOTAL )) && USED_COUNT=$API_TOTAL
+      PLAN_PCT=$((USED_COUNT * 100 / API_TOTAL))
+    else
+      PLAN_PCT=0
+    fi
     
     # Get time window
     START_TS=$(echo "$PLAN_RESPONSE" | jq -r '.model_remains[0].start_time')

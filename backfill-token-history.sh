@@ -82,7 +82,7 @@ while true; do
   fi
   
   # Process results
-  echo "$RESPONSE" | jq -c '.data[]' 2>/dev/null | while read -r ENTRY; do
+  while read -r ENTRY; do
     [[ -z "$ENTRY" ]] && continue
     
     TIMESTAMP=$(echo "$ENTRY" | jq -r '.starting_at')
@@ -105,7 +105,7 @@ EOF
       echo "$SNAPSHOT" | jq '.' > "$HISTORY_FILE"
       TOTAL_SAVED=$((TOTAL_SAVED + 1))
     fi
-  done
+  done < <(echo "$RESPONSE" | jq -c '.data[]' 2>/dev/null)
   
   # Get next page token
   PAGE_TOKEN=$(echo "$RESPONSE" | jq -r '.next_page // ""')
