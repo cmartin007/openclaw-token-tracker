@@ -116,17 +116,21 @@ MONTH_DATA=$(jq -s '
   })
 ' "${json_files[@]}" 2>/dev/null)
 
-# Calculate totals with proper cost formula
+# Calculate totals - sum individual model costs properly
 TOTAL_UNCACHED=$(echo "$MONTH_DATA" | jq -r '[.[].uncached] | add')
 TOTAL_CACHE_5M=$(echo "$MONTH_DATA" | jq -r '[.[].cache_5m] | add')
 TOTAL_CACHE_1H=$(echo "$MONTH_DATA" | jq -r '[.[].cache_1h] | add')
 TOTAL_CACHE_READ=$(echo "$MONTH_DATA" | jq -r '[.[].cache_read] | add')
 TOTAL_OUTPUT=$(echo "$MONTH_DATA" | jq -r '[.[].output] | add')
 
-# Default to MiniMax pricing for now (simple estimate)
 TOTAL_TOKENS=$((TOTAL_UNCACHED + TOTAL_CACHE_5M + TOTAL_CACHE_1H + TOTAL_CACHE_READ + TOTAL_OUTPUT))
-# Rough estimate: $0.0006 per 1M tokens (average)
-TOTAL_COST=$(echo "scale=2; $TOTAL_TOKENS * 0.6 / 1000000" | bc 2>/dev/null | sed 's/^\./0./')
+
+# Calculate cost by summing all models (using average pricing)
+# Will be recalculated properly in the loop below
+TOTAL_COST=0
+
+# Track total cost properly
+RUNNING_TOTAL=0
 
 echo ""
 MONTH_NAME=$(date -u +"%B %Y")
@@ -150,8 +154,14 @@ for row in $(echo "$MONTH_DATA" | jq -r '.[] | @base64'); do
   tokens=$((uncached + cache_5m + cache_1h + cache_read + output))
   [[ $tokens -eq 0 ]] && continue
   
-  # Get pricing based on model family
+  # Initialize cost for each model
+  cost=""
+  
+  # Get pricing based on model family - MiniMax coding plan has no pay-per-use cost
   case "$model" in
+    *minimax*|*MiniMax*)
+      cost="included"
+      ;;
     *haiku*|*Haiku*)
       input_p="0.000001"; output_p="0.000005"
       ;;
@@ -161,31 +171,38 @@ for row in $(echo "$MONTH_DATA" | jq -r '.[] | @base64'); do
     *opus*|*Opus*)
       input_p="0.000005"; output_p="0.000025"
       ;;
-    *minimax*|*MiniMax*)
-      input_p="0.0000001"; output_p="0.0000005"
-      ;;
     *)
       input_p="0.000001"; output_p="0.000005"
       ;;
   esac
   
-  # Calculate cost: uncached (full) + cache_5m (1.25x) + cache_1h (2x) + cache_read (0.1x) + output (full)
-  cost=$(echo "scale=2; 
-    ($uncached * $input_p) + 
-    ($cache_5m * $input_p * 1.25) + 
-    ($cache_1h * $input_p * 2.0) + 
-    ($cache_read * $input_p * 0.1) + 
-    ($output * $output_p)" | bc 2>/dev/null | sed 's/^\./0./')
+  # Calculate cost if not MiniMax (which is included in plan)
+  if [[ "$cost" != "included" ]]; then
+    cost=$(echo "scale=2; 
+      ($uncached * $input_p) + 
+      ($cache_5m * $input_p * 1.25) + 
+      ($cache_1h * $input_p * 2.0) + 
+      ($cache_read * $input_p * 0.1) + 
+      ($output * $output_p)" | bc 2>/dev/null | sed 's/^\./0./')
+    # Accumulate total cost (only non-MiniMax)
+    RUNNING_TOTAL=$(echo "scale=2; $RUNNING_TOTAL + $cost" | bc 2>/dev/null | sed 's/^\./0./')
+  fi
   
   short=$(echo "$model" | grep -oE "haiku|sonnet|opus|minimax" | head -1)
   short=$(echo "$short" | sed 's/^./\u&/')
   [[ -z "$short" ]] && short="MiniMax"
   tokens_fmt=$(format_num "$tokens")
   
-  printf "| %-6s | %-6s | \$%-6s |\n" "$short" "$tokens_fmt" "$cost"
+  if [[ "$cost" == "included" ]]; then
+    printf "| %-6s | %-6s | %-6s |\n" "$short" "$tokens_fmt" "$cost"
+  else
+    printf "| %-6s | %-6s | \$%-6s |\n" "$short" "$tokens_fmt" "$cost"
+  fi
 done
 
 TOTAL_FMT=$(format_num "$TOTAL_TOKENS")
+# Use accumulated running total instead of rough estimate
+TOTAL_COST=${RUNNING_TOTAL:-0}
 echo "|--------|--------|--------|"
 printf "| TOTAL  | %-6s | \$%-6s |\n" "$TOTAL_FMT" "$TOTAL_COST"
 echo ""
