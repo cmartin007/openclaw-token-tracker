@@ -136,8 +136,8 @@ echo ""
 MONTH_NAME=$(date -u +"%B %Y")
 echo "📊 $MONTH_NAME - \$$TOTAL_COST total"
 echo ""
-echo "| Model  | Tokens | Cost   |"
-echo "|--------|--------|--------|"
+echo "| Model      | Uncached | Cache 5m  | Cache Read | Output  | Cost   |"
+echo "| ---------- | -------- | --------- | ---------- | ------- | ------ |"
 
 # Process each model with model-specific pricing
 for row in $(echo "$MONTH_DATA" | jq -r '.[] | @base64'); do
@@ -177,34 +177,38 @@ for row in $(echo "$MONTH_DATA" | jq -r '.[] | @base64'); do
   esac
   
   # Calculate cost if not MiniMax (which is included in plan)
+  # Use awk instead of bc for better handling of large numbers
   if [[ "$cost" != "included" ]]; then
-    cost=$(echo "scale=2; 
-      ($uncached * $input_p) + 
-      ($cache_5m * $input_p * 1.25) + 
-      ($cache_1h * $input_p * 2.0) + 
-      ($cache_read * $input_p * 0.1) + 
-      ($output * $output_p)" | bc 2>/dev/null | sed 's/^\./0./')
+    cost=$(awk -v u="$uncached" -v c5="$cache_5m" -v c1="$cache_1h" -v cr="$cache_read" -v o="$output" -v ip="$input_p" -v op="$output_p" 'BEGIN {
+      printf "%.2f", (u * ip) + (c5 * ip * 1.25) + (c1 * ip * 2.0) + (cr * ip * 0.1) + (o * op)
+    }')
     # Accumulate total cost (only non-MiniMax)
-    RUNNING_TOTAL=$(echo "scale=2; $RUNNING_TOTAL + $cost" | bc 2>/dev/null | sed 's/^\./0./')
+    RUNNING_TOTAL=$(awk -v rt="$RUNNING_TOTAL" -v c="$cost" 'BEGIN { printf "%.2f", rt + c }')
   fi
   
+  # Get short model name
   short=$(echo "$model" | grep -oE "haiku|sonnet|opus|minimax" | head -1)
   short=$(echo "$short" | sed 's/^./\u&/')
   [[ -z "$short" ]] && short="MiniMax"
-  tokens_fmt=$(format_num "$tokens")
+  
+  # Format each token column
+  uncached_fmt=$(format_num "$uncached")
+  cache_5m_fmt=$(format_num "$cache_5m")
+  cache_read_fmt=$(format_num "$cache_read")
+  output_fmt=$(format_num "$output")
   
   if [[ "$cost" == "included" ]]; then
-    printf "| %-6s | %-6s | %-6s |\n" "$short" "$tokens_fmt" "$cost"
+    printf "| %-10s | %-8s | %-9s | %-10s | %-7s | %-6s |\n" "$short" "$uncached_fmt" "$cache_5m_fmt" "$cache_read_fmt" "$output_fmt" "$cost"
   else
-    printf "| %-6s | %-6s | \$%-6s |\n" "$short" "$tokens_fmt" "$cost"
+    printf "| %-10s | %-8s | %-9s | %-10s | %-7s | \$%-6s |\n" "$short" "$uncached_fmt" "$cache_5m_fmt" "$cache_read_fmt" "$output_fmt" "$cost"
   fi
 done
 
 TOTAL_FMT=$(format_num "$TOTAL_TOKENS")
 # Use accumulated running total instead of rough estimate
 TOTAL_COST=${RUNNING_TOTAL:-0}
-echo "|--------|--------|--------|"
-printf "| TOTAL  | %-6s | \$%-6s |\n" "$TOTAL_FMT" "$TOTAL_COST"
+echo "| ---------- | -------- | --------- | ---------- | ------- | ------ |"
+printf "| TOTAL      |          |           |            | %-7s | \$%-6s |\n" "$TOTAL_FMT" "$TOTAL_COST"
 echo ""
 
 # Warning
